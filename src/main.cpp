@@ -36,7 +36,7 @@ constexpr int kTabStripHeight = 34;
 constexpr int kToolbarTop = kTabStripTop + kTabStripHeight;
 constexpr int kToolbarHeight = 40;
 constexpr int kBookmarkRowHeight = 24;
-constexpr int kBookmarkBarRows = 2;
+constexpr int kBookmarkBarRows = 3; // show more bookmarks (all accessible; overflow » for rest)
 constexpr int kBookmarkBarHeight = kBookmarkBarRows * kBookmarkRowHeight + 6;
 constexpr int kFindBarHeight = 30;
 bool g_findVisible = false;
@@ -228,15 +228,20 @@ int IndexOfInPane(BrowserPane& pane, int id) {
 
 int IndexOf(int id) { return IndexOfInPane(g_pane, id); }
 
-Tab* ActiveTab() { return FindTab(g_activeId); }
+Tab* PrimaryActiveTab() { return FindTabInPane(g_pane, g_pane.activeId); }
+Tab* FocusedTab();
+Tab* ActiveTab() { return FocusedTab(); } // targets focused pane in split mode; primary otherwise
 
 bool IsSplitActive() { return g_splitPane != nullptr; }
-enum class ViewMode { Normal, Split, Focus }; // 3-mode dropdown (user: Win+M+1/2/3)
+enum class ViewMode { Normal, Split, Focus }; // 3-mode dropdown
 ViewMode g_viewMode = ViewMode::Normal;
 bool g_winMChord = false; // best-effort in-app chord tracking for Win+M+# while focused
 
-Tab* FocusedTab() { return ActiveTab(); } // split-view focus targeting (deferred with full split view)
-BrowserPane& FocusedPane() { return g_pane; }
+BrowserPane& FocusedPane() { return (IsSplitActive() && g_focusedPane) ? *g_focusedPane : g_pane; }
+Tab* FocusedTab() {
+    if (IsSplitActive()) return FindTabInPane(FocusedPane(), FocusedPane().activeId);
+    return PrimaryActiveTab();
+}
 
 void LayoutChrome();
 void LayoutContent();
@@ -248,30 +253,84 @@ void SaveSettings();
 void FocusActive();
 RECT MenuItemRect(int index);
 
+void ActivateTab(int id); // fwd already present contextually
+
 void CloseSplitView() {
     if (!g_splitPane) return;
     g_focusedPane = &g_pane;
-    for (auto& t : g_splitPane->tabs) { if (t && t->controller) t->controller->Close(); }
+    // Merge right-pane tabs back into primary (keep controllers/tabs alive).
+    for (auto& t : g_splitPane->tabs) {
+        if (t) g_pane.tabs.push_back(std::move(t));
+    }
+    g_splitPane->tabs.clear();
     g_splitPane.reset();
+    g_focusMode = false;
+    g_focusChromeRevealed = false;
+    if (g_main) KillTimer(g_main, 4);
+    if (g_viewMode == ViewMode::Split) g_viewMode = ViewMode::Normal;
     LayoutChrome();
-    ActivateTab(g_activeId);
+    LayoutContent();
+    if (g_activeId) ActivateTab(g_activeId);
+    else if (!g_pane.tabs.empty()) ActivateTab(g_pane.tabs.front()->id);
+    InvalidateRect(g_main, nullptr, TRUE);
 }
 
-void ToggleSplitView() {
-    MessageBoxW(g_main,
-        L"Split view (side-by-side, each pane with its own tabs, shared favorites) is planned next. "
-        L"This needs a pane/tab refactor; for now, use separate windows/workflows.",
-        L"Split View", MB_OK | MB_ICONINFORMATION);
+void EnterSplitView() {
+    if (IsSplitActive()) { CloseSplitView(); return; }
+    // Split v1: "split down the middle: move current tab to the right and existing previous tab on the left".
+    // Shared favorites/bookmarks; shared chrome/toolbar. Full "two separate browsers, each with its own tabs"
+    // within the file toolbar is in progress (v1: two panes/tabs, new tabs/popups still route to primary).
+    if (g_pane.tabs.size() < 2) {
+        MessageBoxW(g_main, L"Open at least two tabs to use split view.", L"Split View", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    // Find MRU (previous) tab that is not the current active tab.
+    int prevId = 0; DWORD best = 0;
+    for (const auto& t : g_pane.tabs) {
+        if (!t || t->id == g_activeId) continue;
+        if (t->lastActiveTick >= best) { best = t->lastActiveTick; prevId = t->id; }
+    }
+    if (prevId == 0) {
+        for (const auto& t : g_pane.tabs) if (t && t->id != g_activeId) { prevId = t->id; break; }
+    }
+    if (prevId == 0 || prevId == g_activeId) return;
+    const int rightId = g_activeId;
+    // Move current (rightId) tab into right pane.
+    std::unique_ptr<Tab> moved;
+    for (auto it = g_pane.tabs.begin(); it != g_pane.tabs.end(); ++it) {
+        if (*it && (*it)->id == rightId) { moved = std::move(*it); g_pane.tabs.erase(it); break; }
+    }
+    if (!moved) return;
+    g_focusMode = false;
+    g_focusChromeRevealed = false;
+    if (g_main) KillTimer(g_main, 4);
+    g_splitPane = std::make_unique<BrowserPane>();
+    g_splitPane->tabs.push_back(std::move(moved));
+    g_splitPane->activeId = rightId;
+    g_pane.activeId = prevId;
+    g_activeId = prevId;
+    g_focusedPane = g_splitPane.get(); // user was on the moved/current tab (now right)
+    g_viewMode = ViewMode::Split;
+    LayoutChrome();
+    LayoutContent();
+    ActivateTab(prevId); // refresh primary; will also show right pane active
+    // Ensure right pane's active tab is visible (ActivateTab sets both panes' visibility by active ids)
+    if (Tab* rt = FindTabInPane(*g_splitPane, rightId)) {
+        if (rt->controller) rt->controller->put_IsVisible(TRUE);
+    }
+    RefreshChrome();
+    InvalidateRect(g_main, nullptr, TRUE);
 }
 
+void ToggleSplitView() { EnterSplitView(); }
+
+void EnterSplitView();
 void SetViewMode(ViewMode mode) {
     if (mode == ViewMode::Split) {
-        MessageBoxW(g_main,
-            L"Split view (side-by-side, each pane with its own tabs, shared favorites) is in progress and needs a pane/tab refactor. "
-            L"Normal and Focus modes are available now.",
-            L"View Mode", MB_OK | MB_ICONINFORMATION);
-        return; // keep current stable mode until split is implemented
+        EnterSplitView();
+        return;
     }
+    if (g_splitPane) CloseSplitView();
     g_viewMode = mode;
     g_focusMode = (mode == ViewMode::Focus);
     g_focusChromeRevealed = false; // Zen-style: hidden until hover to top edge
@@ -279,7 +338,6 @@ void SetViewMode(ViewMode mode) {
         if (g_focusMode) SetTimer(g_main, 4, 120, nullptr);
         else KillTimer(g_main, 4);
     }
-    if (g_splitPane && mode != ViewMode::Split) CloseSplitView();
     LayoutChrome();
     LayoutContent();
     RefreshChrome();
@@ -292,7 +350,7 @@ void ToggleFocusMode() { SetViewMode(g_focusMode ? ViewMode::Normal : ViewMode::
 void ShowViewModeMenuAt(POINT screenPt) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Normal ? MF_CHECKED : 0), 401, L"Normal\tCtrl+Alt+1");
-    AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Split  ? MF_CHECKED : 0), 402, L"Split\tCtrl+Alt+2 (planned)");
+    AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Split  ? MF_CHECKED : 0), 402, L"Split (side-by-side)\tCtrl+Alt+2");
     AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Focus  ? MF_CHECKED : 0), 403, L"Focus (Zen compact)\tCtrl+Alt+3 / F11");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     // Focus mode hides tab strip but keeps access to other open tabs (no mode switch needed).
@@ -346,32 +404,62 @@ RECT ContentBounds() {
 
 constexpr int kPinnedTabWidth = 32;
 
-int PinnedTabCount() {
+// Unified tab strip (split view: "outside one browser using tabs from Left and Right groups; inside split visually distinct")
+struct StripTabRef { Tab* tab = nullptr; BrowserPane* pane = nullptr; bool isRightGroup = false; };
+void BuildStripTabs(std::vector<StripTabRef>& out) {
+    out.clear();
+    for (auto& t : g_pane.tabs) if (t) out.push_back({t.get(), &g_pane, false});
+    if (IsSplitActive() && g_splitPane) {
+        for (auto& t : g_splitPane->tabs) if (t) out.push_back({t.get(), g_splitPane.get(), true});
+    }
+}
+
+int StripPinnedCount(const std::vector<StripTabRef>& tabs) {
     int n = 0;
-    for (const auto& t : g_tabs) if (t && t->pinned) ++n;
+    for (const auto& r : tabs) if (r.tab && r.tab->pinned) ++n;
     return n;
 }
 
-int NormalTabWidth() {
+int PinnedTabCount() {
+    std::vector<StripTabRef> tabs; BuildStripTabs(tabs);
+    return StripPinnedCount(tabs);
+}
+
+int StripNormalTabWidth(const std::vector<StripTabRef>& tabs) {
     RECT client{};
     GetClientRect(g_main, &client);
-    const int pinned = PinnedTabCount();
-    const int normal = std::max(0, static_cast<int>(g_tabs.size()) - pinned);
-    const int avail = std::max(60, static_cast<int>(client.right) - kNewTabWidth - pinned * kPinnedTabWidth);
+    const int pinned = StripPinnedCount(tabs);
+    const int normal = std::max(0, static_cast<int>(tabs.size()) - pinned);
+    const int divider = (IsSplitActive() && !g_pane.tabs.empty() && g_splitPane && !g_splitPane->tabs.empty()) ? 10 : 0;
+    const int avail = std::max(60, static_cast<int>(client.right) - kNewTabWidth - pinned * kPinnedTabWidth - divider);
     if (normal <= 0) return kTabMinWidth;
     return std::clamp(avail / normal, kTabMinWidth, kTabMaxWidth);
 }
 
-RECT TabRect(int index) {
-    if (index < 0 || index >= static_cast<int>(g_tabs.size())) return {};
+int NormalTabWidth() {
+    std::vector<StripTabRef> tabs; BuildStripTabs(tabs);
+    return StripNormalTabWidth(tabs);
+}
+
+RECT TabRectForStripIndex(const std::vector<StripTabRef>& tabs, int index) {
+    if (index < 0 || index >= static_cast<int>(tabs.size())) return {};
     int x = 0;
-    const int normalW = NormalTabWidth();
+    const int normalW = StripNormalTabWidth(tabs);
+    const bool hasDivider = IsSplitActive() && !g_pane.tabs.empty() && g_splitPane && !g_splitPane->tabs.empty();
     for (int i = 0; i < index; ++i) {
-        x += (g_tabs[static_cast<size_t>(i)] && g_tabs[static_cast<size_t>(i)]->pinned) ? kPinnedTabWidth : normalW;
+        if (hasDivider && i > 0 && tabs[static_cast<size_t>(i)].isRightGroup && !tabs[static_cast<size_t>(i - 1)].isRightGroup) x += 10;
+        x += (tabs[static_cast<size_t>(i)].tab && tabs[static_cast<size_t>(i)].tab->pinned) ? kPinnedTabWidth : normalW;
     }
-    const bool pinned = g_tabs[static_cast<size_t>(index)] && g_tabs[static_cast<size_t>(index)]->pinned;
+    if (hasDivider && index > 0 && tabs[static_cast<size_t>(index)].isRightGroup && !tabs[static_cast<size_t>(index - 1)].isRightGroup) x += 10;
+    const bool pinned = tabs[static_cast<size_t>(index)].tab && tabs[static_cast<size_t>(index)].tab->pinned;
     const int w = pinned ? kPinnedTabWidth : normalW;
     return RECT{x, kTabStripTop + 2, x + w, kTabStripTop + kTabStripHeight};
+}
+
+RECT TabRect(int index) {
+    std::vector<StripTabRef> tabs; BuildStripTabs(tabs);
+    // Back-compat: index into unified display list (replaces old g_tabs-only indexing).
+    return TabRectForStripIndex(tabs, index);
 }
 
 void SortTabsPinnedLeft() {
@@ -1126,14 +1214,22 @@ void TryResumeTab(Tab& tab) {  // FR-TAB6
 }
 
 void ActivateTab(int id) {
-    if (!FindTab(id)) return;
-    g_activeId = id;
-    for (auto& tab : g_tabs) {
-        if (tab->id == id) {
-            tab->lastActiveTick = GetTickCount();
-            TryResumeTab(*tab);
+    BrowserPane* pane = PaneOfTab(id);
+    if (!pane || !FindTabInPane(*pane, id)) return;
+    pane->activeId = id;
+    if (pane == &g_pane) g_activeId = id;
+    g_focusedPane = pane;
+    auto setPaneVisibility = [&](BrowserPane& p) {
+        for (auto& tab : p.tabs) {
+            if (!tab) continue;
+            if (tab->id == p.activeId) { tab->lastActiveTick = GetTickCount(); TryResumeTab(*tab); }
+            if (tab->controller) tab->controller->put_IsVisible(tab->id == p.activeId);
         }
-        if (tab->controller) tab->controller->put_IsVisible(tab->id == id);
+    };
+    setPaneVisibility(g_pane);
+    if (g_splitPane) setPaneVisibility(*g_splitPane);
+    else {
+        // ensure no split-pane tabs visible (should be none)
     }
     LayoutContent();
     if (GetFocus() != g_address) FocusActive();
@@ -1142,7 +1238,7 @@ void ActivateTab(int id) {
 }
 
 void NewTab(const std::wstring& url, bool activate, bool pinned, const std::wstring& knownTitle);
-void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args);
+void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args, int sourceTabId = 0);
 void CloseTab(int id);
 void ReopenClosedTab();
 
@@ -1546,7 +1642,8 @@ void SetupTab(Tab& tab) {
                 LPWSTR source = nullptr;
                 sender->get_Source(&source);
                 current->url = TakeString(source);
-                if (id == g_activeId) RefreshChrome();
+                BrowserPane* owner = PaneOfTab(id);
+                if (owner && owner->activeId == id && (!IsSplitActive() || &FocusedPane() == owner || owner == &g_pane)) RefreshChrome();
                 return S_OK;
             }).Get(),
         &token);
@@ -1564,9 +1661,9 @@ void SetupTab(Tab& tab) {
         &token);
     tab.webview->add_NewWindowRequested(
         Callback<ICoreWebView2NewWindowRequestedEventHandler>(
-            [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
-                // Provide a real WebView2 target so window.open()/OAuth popups (e.g. pCloud Google login) keep opener access.
-                NewTabForNewWindow(args);
+            [id](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                // Provide a real WebView2 target so window.open()/OAuth popups keep opener access; open in source pane.
+                NewTabForNewWindow(args, id);
                 return S_OK;
             }).Get(),
         &token);
@@ -1755,21 +1852,29 @@ void SetupTab(Tab& tab) {
     }
 }
 
+BrowserPane* TargetPaneForNewTab(BrowserPane* preferred = nullptr) {
+    if (preferred) return preferred;
+    return &FocusedPane();
+}
+
 void NewTab(const std::wstring& url, bool activate, bool pinned, const std::wstring& knownTitle) {
     if (!g_env) return;
+    BrowserPane* pane = TargetPaneForNewTab();
+    if (!pane) pane = &g_pane;
     auto tab = std::make_unique<Tab>();
     tab->id = g_nextTabId++;
     tab->url = url;
     tab->pinned = pinned;
     if (!knownTitle.empty()) tab->title = knownTitle;
     const int id = tab->id;
-    g_tabs.push_back(std::move(tab));
+    pane->tabs.push_back(std::move(tab));
     g_env->CreateCoreWebView2Controller(
         g_main,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
             [id, activate](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
                 Tab* created = FindTab(id);
-                if (!created) {
+                BrowserPane* owner = PaneOfTab(id);
+                if (!created || !owner) {
                     if (controller) controller->Close();
                     return S_OK;
                 }
@@ -1780,23 +1885,30 @@ void NewTab(const std::wstring& url, bool activate, bool pinned, const std::wstr
                 created->controller = controller;
                 controller->get_CoreWebView2(&created->webview);
                 controller->put_IsVisible(FALSE);
-                controller->put_Bounds(ContentBounds());
+                controller->put_Bounds(PaneContentBounds(*owner));
                 SetupTab(*created);
                 if (created->webview) created->webview->Navigate(created->url.c_str());
-                if (activate || id == g_activeId) ActivateTab(id);
+                const bool makeActive = activate || owner->activeId == 0 || owner->tabs.size() == 1;
+                if (makeActive) ActivateTab(id);
                 else { SaveSession(); InvalidateStrip(); }
                 return S_OK;
             }).Get());
 }
 
-void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args) {
+void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args, int sourceTabId) {
     if (!g_env || !args) return;
+    BrowserPane* pane = sourceTabId ? PaneOfTab(sourceTabId) : &FocusedPane();
+    if (!pane) pane = &FocusedPane();
     ComPtr<ICoreWebView2Deferral> deferral;
     if (FAILED(args->GetDeferral(&deferral)) || !deferral) {
         LPWSTR uri = nullptr;
         args->get_Uri(&uri);
         args->put_Handled(TRUE);
-        NewTab(TakeString(uri), true);
+        const std::wstring url = TakeString(uri);
+        BrowserPane* prevFocus = g_focusedPane;
+        g_focusedPane = pane; // open in source/focused pane
+        NewTab(url, true);
+        g_focusedPane = prevFocus ? prevFocus : &g_pane;
         return;
     }
     LPWSTR uri = nullptr;
@@ -1806,13 +1918,14 @@ void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args) {
     tab->id = g_nextTabId++;
     tab->url = url;
     const int id = tab->id;
-    g_tabs.push_back(std::move(tab));
+    pane->tabs.push_back(std::move(tab));
     g_env->CreateCoreWebView2Controller(
         g_main,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
             [id, args, deferral](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
                 Tab* created = FindTab(id);
-                if (!created) {
+                BrowserPane* owner = PaneOfTab(id);
+                if (!created || !owner) {
                     if (controller) controller->Close();
                     args->put_Handled(TRUE);
                     deferral->Complete();
@@ -1827,7 +1940,7 @@ void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args) {
                 created->controller = controller;
                 controller->get_CoreWebView2(&created->webview);
                 controller->put_IsVisible(FALSE);
-                controller->put_Bounds(ContentBounds());
+                controller->put_Bounds(PaneContentBounds(*owner));
                 SetupTab(*created);
                 // Provide target for window.open/opener; WebView2 will perform the requested navigation.
                 args->put_NewWindow(created->webview.Get());
@@ -1839,26 +1952,35 @@ void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args) {
 }
 
 void CloseTab(int id) {
-    const int index = IndexOf(id);
+    BrowserPane* pane = PaneOfTab(id);
+    if (!pane) return;
+    const int index = IndexOfInPane(*pane, id);
     if (index < 0) return;
-    const bool wasActive = id == g_activeId;
+    const bool wasActive = id == pane->activeId;
     // FR-NAV4: remember closed tab (up to 20)
-    Tab* closing = g_tabs[static_cast<size_t>(index)].get();
+    Tab* closing = pane->tabs[static_cast<size_t>(index)].get();
     if (closing && !closing->url.empty() && closing->url != L"about:blank") {
         g_closedTabs.push_back(ClosedTab{closing->url, closing->title});
         if (g_closedTabs.size() > 20) g_closedTabs.erase(g_closedTabs.begin());
     }
-    if (g_tabs[static_cast<size_t>(index)]->controller) {
-        g_tabs[static_cast<size_t>(index)]->controller->Close();
+    if (pane->tabs[static_cast<size_t>(index)]->controller) {
+        pane->tabs[static_cast<size_t>(index)]->controller->Close();
     }
-    g_tabs.erase(g_tabs.begin() + index);
-    if (g_tabs.empty()) {
+    pane->tabs.erase(pane->tabs.begin() + index);
+    // If split pane becomes empty, exit split (keep primary).
+    if (pane == g_splitPane.get() && pane->tabs.empty()) { CloseSplitView(); return; }
+    if (g_pane.tabs.empty() && (!g_splitPane || g_splitPane->tabs.empty())) {
         NewTab(kHomePage, true); // keep window open; closing last tab should not exit
         return;
     }
     if (wasActive) {
-        const size_t next = std::min(static_cast<size_t>(index), g_tabs.size() - 1);
-        ActivateTab(g_tabs[next]->id);
+        if (pane->tabs.empty()) {
+            // primary became empty but split may have tabs? move one over or exit split
+            if (g_splitPane && !g_splitPane->tabs.empty()) { CloseSplitView(); return; }
+            NewTab(kHomePage, true); return;
+        }
+        const size_t next = std::min(static_cast<size_t>(index), pane->tabs.size() - 1);
+        ActivateTab(pane->tabs[next]->id);
     } else {
         InvalidateStrip();
     }
@@ -2001,14 +2123,36 @@ void PaintTabStrip(HDC dc) {
     DeleteObject(bg);
     HGDIOBJ old = SelectObject(dc, g_uiFont ? g_uiFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
     SetBkMode(dc, TRANSPARENT);
+    std::vector<StripTabRef> tabs; BuildStripTabs(tabs);
+    const bool split = IsSplitActive() && g_splitPane;
     int stripEnd = 0;
-    for (size_t i = 0; i < g_tabs.size(); ++i) {
-        Tab& tab = *g_tabs[i];
-        RECT r = TabRect(static_cast<int>(i));
+    for (size_t i = 0; i < tabs.size(); ++i) {
+        if (!tabs[i].tab) continue;
+        Tab& tab = *tabs[i].tab;
+        BrowserPane* pane = tabs[i].pane ? tabs[i].pane : &g_pane;
+        // Draw visual divider between left and right groups in split view.
+        if (split && i > 0 && tabs[i].isRightGroup && !tabs[i - 1].isRightGroup) {
+            RECT prev = TabRectForStripIndex(tabs, static_cast<int>(i - 1));
+            RECT div{prev.right + 2, kTabStripTop + 6, prev.right + 6, kTabStripTop + kTabStripHeight - 4};
+            HBRUSH db = CreateSolidBrush(RGB(150, 155, 165));
+            FillRect(dc, &div, db); DeleteObject(db);
+        }
+        RECT r = TabRectForStripIndex(tabs, static_cast<int>(i));
         stripEnd = std::max(stripEnd, static_cast<int>(r.right));
-        HBRUSH tabBrush = CreateSolidBrush(tab.id == g_activeId ? RGB(255, 255, 255) : (tab.pinned ? RGB(232, 236, 242) : RGB(224, 227, 232)));
+        const bool isPaneActive = (pane->activeId == tab.id);
+        const bool isFocusedActive = isPaneActive && (!split || &FocusedPane() == pane);
+        COLORREF fill = tab.pinned ? RGB(232, 236, 242) : RGB(224, 227, 232);
+        if (isPaneActive) fill = isFocusedActive ? RGB(255, 255, 255) : RGB(244, 246, 250);
+        HBRUSH tabBrush = CreateSolidBrush(fill);
         FillRect(dc, &r, tabBrush);
         DeleteObject(tabBrush);
+        // Split visual distinction: indicate which group/pane a tab belongs to when active.
+        if (split) {
+            COLORREF paneColor = tabs[i].isRightGroup ? RGB(90, 140, 220) : RGB(120, 170, 120);
+            RECT topMark{r.left + 2, r.top, r.right - 2, r.top + 2};
+            HBRUSH pb = CreateSolidBrush(isPaneActive ? paneColor : RGB(205, 210, 218));
+            FillRect(dc, &topMark, pb); DeleteObject(pb);
+        }
         if (tab.groupId > 0) { // FR-GRP3 (minimal visual): group color marker
             if (TabGroup* g = FindTabGroup(tab.groupId)) {
                 RECT mark{r.left, r.bottom - 3, r.right, r.bottom};
@@ -2033,7 +2177,7 @@ void PaintTabStrip(HDC dc) {
     SelectObject(dc, old);
 }
 
-void PaintCompactTabStrip(HDC dc) { // Zen compact/focus: accessible tab switcher (tabs hidden until hover/reveal)
+void PaintCompactTabStrip(HDC dc) { // Zen compact/focus: accessible tab switcher; unified left/right groups in split (if ever combined)
     RECT c{}; GetClientRect(g_main, &c);
     const int top = CompactTabStripTop();
     RECT strip{0, top, c.right, top + kCompactTabHeight};
@@ -2041,18 +2185,23 @@ void PaintCompactTabStrip(HDC dc) { // Zen compact/focus: accessible tab switche
     FillRect(dc, &strip, bg); DeleteObject(bg);
     HGDIOBJ old = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
     SetBkMode(dc, TRANSPARENT);
+    std::vector<StripTabRef> tabs; BuildStripTabs(tabs);
     int x = 6;
     const int maxX = c.right - 8;
-    for (size_t i = 0; i < g_tabs.size() && x < maxX; ++i) {
-        if (!g_tabs[i]) continue;
-        Tab& tab = *g_tabs[i];
+    for (size_t i = 0; i < tabs.size() && x < maxX; ++i) {
+        if (!tabs[i].tab) continue;
+        Tab& tab = *tabs[i].tab;
+        BrowserPane* pane = tabs[i].pane ? tabs[i].pane : &g_pane;
+        if (IsSplitActive() && i > 0 && tabs[i].isRightGroup && !tabs[i - 1].isRightGroup) x += 6;
         std::wstring label = tab.title.empty() ? (tab.url.empty() ? L"New Tab" : tab.url) : tab.title;
         if (label.size() > 24) label = label.substr(0, 22) + L"..";
         SIZE sz{}; GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &sz);
         const int w = std::clamp(static_cast<int>(sz.cx) + 14, 40, 180);
         RECT r{x, top + 2, std::min(x + w, maxX), top + kCompactTabHeight - 2};
-        COLORREF fill = (tab.id == g_activeId) ? RGB(255,255,255) : RGB(224,227,232);
+        const bool isPaneActive = (pane->activeId == tab.id);
+        COLORREF fill = isPaneActive ? RGB(255,255,255) : RGB(224,227,232);
         FillRoundedRect(dc, r, 8, fill, fill);
+        if (IsSplitActive()) { RECT tm{r.left+2,r.top+1,r.right-2,r.top+3}; HBRUSH pb=CreateSolidBrush(tabs[i].isRightGroup?RGB(90,140,220):RGB(120,170,120)); FillRect(dc,&tm,pb); DeleteObject(pb); }
         if (tab.groupId > 0) if (TabGroup* g = FindTabGroup(tab.groupId)) { RECT m{r.left,r.bottom-2,r.right,r.bottom}; HBRUSH gb=CreateSolidBrush(g->color); FillRect(dc,&m,gb); DeleteObject(gb); }
         SetTextColor(dc, RGB(40,44,48));
         RECT tr{r.left+6, r.top, r.right-4, r.bottom};
@@ -2070,12 +2219,14 @@ bool HitTestCompactTabStrip(int x, int y, int& tabId) {
     RECT c{}; GetClientRect(g_main, &c);
     HDC dc = GetDC(g_main);
     HGDIOBJ old = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+    std::vector<StripTabRef> tabs; BuildStripTabs(tabs);
     int tx = 6;
     const int maxX = c.right - 8;
     bool hit = false;
-    for (size_t i = 0; i < g_tabs.size() && tx < maxX; ++i) {
-        if (!g_tabs[i]) continue;
-        Tab& tab = *g_tabs[i];
+    for (size_t i = 0; i < tabs.size() && tx < maxX; ++i) {
+        if (!tabs[i].tab) continue;
+        Tab& tab = *tabs[i].tab;
+        if (IsSplitActive() && i > 0 && tabs[i].isRightGroup && !tabs[i - 1].isRightGroup) tx += 6;
         std::wstring label = tab.title.empty() ? (tab.url.empty() ? L"New Tab" : tab.url) : tab.title;
         if (label.size() > 24) label = label.substr(0, 22) + L"..";
         SIZE sz{}; GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &sz);
@@ -2877,6 +3028,7 @@ void ShowMenu(int which) {
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING | (g_viewMode == ViewMode::Normal ? MF_CHECKED : 0), 401, L"Mode: Normal\tCtrl+Alt+1");
         AppendMenuW(menu, MF_STRING | (g_viewMode == ViewMode::Focus  ? MF_CHECKED : 0), 403, L"Mode: Focus (Zen compact)\tCtrl+Alt+3 / F11");
+        AppendMenuW(menu, MF_STRING | (g_viewMode == ViewMode::Split  ? MF_CHECKED : 0), 402, L"Mode: Split (side-by-side)\tCtrl+Alt+2");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 4, L"Picture in Picture");
         AppendMenuW(menu, MF_STRING, 5, L"Open Extensions Folder...");
@@ -3510,14 +3662,17 @@ LRESULT CALLBACK ButtonProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 enum class StripHit { None, Tab, Close, NewTab };
 StripHit HitTestStrip(int x, int y, int& id) {
+    id = 0;
     if (y < kTabStripTop || y >= kTabStripTop + kTabStripHeight) return StripHit::None;
+    std::vector<StripTabRef> tabs; BuildStripTabs(tabs);
     int stripEnd = 0;
-    for (size_t i = 0; i < g_tabs.size(); ++i) {
-        RECT r = TabRect(static_cast<int>(i));
+    for (size_t i = 0; i < tabs.size(); ++i) {
+        if (!tabs[i].tab) continue;
+        RECT r = TabRectForStripIndex(tabs, static_cast<int>(i));
         stripEnd = std::max(stripEnd, static_cast<int>(r.right));
         if (x >= r.left && x < r.right) {
-            id = g_tabs[i]->id;
-            const bool pinned = g_tabs[i]->pinned;
+            id = tabs[i].tab->id;
+            const bool pinned = tabs[i].tab->pinned;
             RECT cr = CloseRect(r, pinned);
             const bool onClose = !pinned && x >= cr.left && x < cr.right && y >= cr.top && y < cr.bottom;
             return onClose ? StripHit::Close : StripHit::Tab;
@@ -4041,16 +4196,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
                 if (msg.wParam == '1') { SetViewMode(ViewMode::Normal); continue; }
                 if (msg.wParam == '2') { SetViewMode(ViewMode::Split); continue; }
                 if (msg.wParam == '3') { SetViewMode(ViewMode::Focus); continue; }
+                if (msg.wParam == '4' || msg.wParam == '5') { // tab left/right (Win+Q/E conflict with Windows)
+                    BrowserPane& pane = FocusedPane();
+                    if (pane.tabs.size() > 1) {
+                        int idx = IndexOfInPane(pane, pane.activeId);
+                        if (idx < 0) idx = 0;
+                        if (msg.wParam == '4') idx = (idx - 1 + static_cast<int>(pane.tabs.size())) % static_cast<int>(pane.tabs.size());
+                        else idx = (idx + 1) % static_cast<int>(pane.tabs.size());
+                        if (pane.tabs[static_cast<size_t>(idx)]) ActivateTab(pane.tabs[static_cast<size_t>(idx)]->id);
+                    }
+                    continue;
+                }
             }
-            // In-app shortcuts while focused (Win+E/Win+Q/Win+T/Win+W conflict with Windows shell; best-effort).
+            // In-app shortcuts while focused (Win+E/Win+Q conflict with Windows shell; best-effort; Win+Q also conflicts on some systems).
             if (winDown && !IsCtrlDown()) {
                 if (msg.wParam == 'Q' || msg.wParam == 'E') {
-                    if (g_tabs.size() > 1) {
-                        int idx = IndexOf(g_activeId);
+                    BrowserPane& pane = FocusedPane();
+                    if (pane.tabs.size() > 1) {
+                        int idx = IndexOfInPane(pane, pane.activeId);
                         if (idx < 0) idx = 0;
-                        if (msg.wParam == 'Q') idx = (idx - 1 + static_cast<int>(g_tabs.size())) % static_cast<int>(g_tabs.size());
-                        else idx = (idx + 1) % static_cast<int>(g_tabs.size());
-                        ActivateTab(g_tabs[static_cast<size_t>(idx)]->id);
+                        if (msg.wParam == 'Q') idx = (idx - 1 + static_cast<int>(pane.tabs.size())) % static_cast<int>(pane.tabs.size());
+                        else idx = (idx + 1) % static_cast<int>(pane.tabs.size());
+                        if (pane.tabs[static_cast<size_t>(idx)]) ActivateTab(pane.tabs[static_cast<size_t>(idx)]->id);
                     }
                     continue;
                 }
