@@ -40,10 +40,12 @@ constexpr int kBookmarkBarRows = 2;
 constexpr int kBookmarkBarHeight = kBookmarkBarRows * kBookmarkRowHeight + 6;
 constexpr int kFindBarHeight = 30;
 bool g_findVisible = false;
+bool g_focusMode = false; // Focus mode: hide chrome for max screen real estate (movie/Zen-like)
+inline int MenuBarVisibleHeight() { return g_focusMode ? 0 : kMenuBarHeight; }
 inline int FindBarTop() { return kToolbarTop + kToolbarHeight; }
-inline int FindBarVisibleHeight() { return g_findVisible ? kFindBarHeight : 0; }
+inline int FindBarVisibleHeight() { return (g_findVisible && !g_focusMode) ? kFindBarHeight : 0; }
 inline int BookmarkBarTop() { return kToolbarTop + kToolbarHeight + FindBarVisibleHeight(); }
-inline int ChromeHeight() { return BookmarkBarTop() + kBookmarkBarHeight; }
+inline int ChromeHeight() { return g_focusMode ? 0 : (BookmarkBarTop() + kBookmarkBarHeight); }
 constexpr int kTabMinWidth = 60;
 constexpr int kTabMaxWidth = 200;
 constexpr int kNewTabWidth = 34;
@@ -54,7 +56,7 @@ constexpr UINT kMsgShortcut = WM_APP + 1;
 constexpr UINT_PTR kTimerFolderClose = 2;
 constexpr int kMaxFolderLevels = 5;
 
-enum ControlId { kBackButton = 101, kForwardButton, kReloadButton, kStarButton, kShieldButton, kPipButton, kMediaButton, kAddressBar, kFindEdit = 201, kFindNext, kFindPrev, kFindClose };
+enum ControlId { kBackButton = 101, kForwardButton, kReloadButton, kStarButton, kShieldButton, kPipButton, kSplitViewButton, kMediaButton, kAddressBar, kFindEdit = 201, kFindNext, kFindPrev, kFindClose };
 enum MenuId { kMenuNone = -1, kMenuFile = 0, kMenuBookmarks = 1, kMenuHistory = 2, kMenuExtensions = 3, kMenuSessions = 4, kMenuTabGroups = 5, kMenuGear = 6 };
 
 struct Tab {
@@ -92,7 +94,7 @@ struct BookmarkLayout {
 };
 
 HWND g_main = nullptr;
-HWND g_back = nullptr, g_forward = nullptr, g_reload = nullptr, g_star = nullptr, g_shield = nullptr, g_pip = nullptr, g_media = nullptr, g_address = nullptr;
+HWND g_back = nullptr, g_forward = nullptr, g_reload = nullptr, g_star = nullptr, g_shield = nullptr, g_pip = nullptr, g_splitBtn = nullptr, g_media = nullptr, g_address = nullptr;
 WNDPROC g_addressProc = nullptr;
 WNDPROC g_buttonProc = nullptr;
 HWND g_hoverButton = nullptr;
@@ -104,9 +106,20 @@ constexpr COLORREF kThemeBg = RGB(246, 247, 249);
 constexpr COLORREF kThemeBorder = RGB(210, 214, 220);
 
 ComPtr<ICoreWebView2Environment> g_env;
-std::vector<std::unique_ptr<Tab>> g_tabs;
+struct BrowserPane {
+    std::vector<std::unique_ptr<Tab>> tabs;
+    int activeId = 0;
+};
+
+BrowserPane g_pane;                  // primary/left pane (always exists)
+std::unique_ptr<BrowserPane> g_splitPane; // secondary/right pane (split view: each pane has its own tabs, shared favorites)
+BrowserPane* g_focusedPane = &g_pane;
 int g_nextTabId = 1;
-int g_activeId = 0;
+
+// Compatibility aliases for incremental migration (primary pane).
+std::vector<std::unique_ptr<Tab>>& g_tabs = g_pane.tabs;
+int& g_activeId = g_pane.activeId;
+
 std::vector<TabGroup> g_tabGroups; // FR-GRP1-4
 int g_nextGroupId = 1;
 
@@ -178,21 +191,99 @@ bool IsShortcutKey(UINT vk) {
     return (vk >= '1' && vk <= '9') || vk == 'D' || vk == 'F' || vk == 'G' || vk == 'H' || vk == 'J' || vk == 'L' || vk == 'R' || vk == 'T' || vk == 'W' || vk == VK_TAB;
 }
 
-Tab* FindTab(int id) {
-    for (auto& tab : g_tabs) {
-        if (tab->id == id) return tab.get();
-    }
+Tab* FindTabInPane(BrowserPane& pane, int id) {
+    for (auto& tab : pane.tabs) if (tab && tab->id == id) return tab.get();
     return nullptr;
 }
 
-int IndexOf(int id) {
-    for (size_t i = 0; i < g_tabs.size(); ++i) {
-        if (g_tabs[i]->id == id) return static_cast<int>(i);
-    }
+BrowserPane* PaneOfTab(int id) {
+    if (FindTabInPane(g_pane, id)) return &g_pane;
+    if (g_splitPane && FindTabInPane(*g_splitPane, id)) return g_splitPane.get();
+    return nullptr;
+}
+
+Tab* FindTab(int id) {
+    Tab* t = FindTabInPane(g_pane, id);
+    if (t) return t;
+    return g_splitPane ? FindTabInPane(*g_splitPane, id) : nullptr;
+}
+
+int IndexOfInPane(BrowserPane& pane, int id) {
+    for (size_t i = 0; i < pane.tabs.size(); ++i) if (pane.tabs[i] && pane.tabs[i]->id == id) return static_cast<int>(i);
     return -1;
 }
 
+int IndexOf(int id) { return IndexOfInPane(g_pane, id); }
+
 Tab* ActiveTab() { return FindTab(g_activeId); }
+
+bool IsSplitActive() { return g_splitPane != nullptr; }
+enum class ViewMode { Normal, Split, Focus }; // 3-mode dropdown (user: Win+M+1/2/3)
+ViewMode g_viewMode = ViewMode::Normal;
+bool g_winMChord = false; // best-effort in-app chord tracking for Win+M+# while focused
+
+Tab* FocusedTab() { return ActiveTab(); } // split-view focus targeting (deferred with full split view)
+BrowserPane& FocusedPane() { return g_pane; }
+
+void LayoutChrome();
+void LayoutContent();
+void RefreshChrome();
+void InvalidateStrip();
+void ActivateTab(int id);
+void FocusActive();
+
+void CloseSplitView() {
+    if (!g_splitPane) return;
+    g_focusedPane = &g_pane;
+    for (auto& t : g_splitPane->tabs) { if (t && t->controller) t->controller->Close(); }
+    g_splitPane.reset();
+    LayoutChrome();
+    ActivateTab(g_activeId);
+}
+
+void ToggleSplitView() {
+    MessageBoxW(g_main,
+        L"Split view (side-by-side, each pane with its own tabs, shared favorites) is planned next. "
+        L"This needs a pane/tab refactor; for now, use separate windows/workflows.",
+        L"Split View", MB_OK | MB_ICONINFORMATION);
+}
+
+void SetViewMode(ViewMode mode) {
+    if (mode == ViewMode::Split) {
+        MessageBoxW(g_main,
+            L"Split view (side-by-side, each pane with its own tabs, shared favorites) is in progress and needs a pane/tab refactor. "
+            L"Normal and Focus modes are available now.",
+            L"View Mode", MB_OK | MB_ICONINFORMATION);
+        return; // keep current stable mode until split is implemented
+    }
+    g_viewMode = mode;
+    g_focusMode = (mode == ViewMode::Focus);
+    if (g_splitPane && mode != ViewMode::Split) CloseSplitView();
+    LayoutChrome();
+    LayoutContent();
+    RefreshChrome();
+    InvalidateRect(g_main, nullptr, TRUE);
+    if (g_focusMode) FocusActive();
+}
+
+void ToggleFocusMode() { SetViewMode(g_focusMode ? ViewMode::Normal : ViewMode::Focus); }
+
+void ShowViewModeMenu() {
+    if (!g_splitBtn) return;
+    RECT r{}; GetWindowRect(g_splitBtn, &r);
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Normal ? MF_CHECKED : 0), 401, L"Normal\tCtrl+Alt+1");
+    AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Split  ? MF_CHECKED : 0), 402, L"Split\tCtrl+Alt+2 (planned)");
+    AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Focus  ? MF_CHECKED : 0), 403, L"Focus\tCtrl+Alt+3 / F11");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Requested: Win+M+1/2/3 (best-effort; Win+M is a Windows shortcut)");
+    SetForegroundWindow(g_main);
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom, 0, g_main, nullptr);
+    DestroyMenu(m);
+    if (cmd == 401) SetViewMode(ViewMode::Normal);
+    else if (cmd == 402) SetViewMode(ViewMode::Split);
+    else if (cmd == 403) SetViewMode(ViewMode::Focus);
+}
 
 RECT ContentBounds() {
     RECT bounds{};
@@ -263,7 +354,7 @@ RECT AddressPillRect() {
     ReleaseDC(g_main, dc);
     const int minWidth = static_cast<int>(sz.cx) * 2 / 5 + 36;
     const int maxWidth = static_cast<int>(sz.cx) + 36;
-    const int left = 8 + 7 * 42 + 8;
+    const int left = 8 + 8 * 42 + 8; // 8 toolbar buttons incl. view-mode/split dropdown
     const int width = std::clamp(rightEdge - left, minWidth, maxWidth);
     return RECT{left, kToolbarTop + 4, left + width, kToolbarTop + 36};
 }
@@ -828,27 +919,49 @@ void FindInPage(bool forward) {  // FR-NAV3
 
 void LayoutChrome() {
     if (!g_main) return;
-    HWND btns[] = {g_back, g_forward, g_reload, g_star, g_shield, g_pip, g_media};
-    for (int i = 0; i < 7; ++i) {
+    HWND btns[] = {g_back, g_forward, g_reload, g_star, g_shield, g_pip, g_splitBtn, g_media};
+    const bool showChrome = !g_focusMode;
+    for (int i = 0; i < 8; ++i) {
         RECT r = ButtonRect(i);
-        if (btns[i]) MoveWindow(btns[i], r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
+        if (btns[i]) {
+            if (showChrome) MoveWindow(btns[i], r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
+            ShowWindow(btns[i], showChrome ? SW_SHOW : SW_HIDE);
+        }
     }
     RECT pill = AddressPillRect();
     if (g_address) {
-        MoveWindow(g_address, static_cast<int>(pill.left + 10), static_cast<int>(pill.top + 7),
+        if (showChrome) MoveWindow(g_address, static_cast<int>(pill.left + 10), static_cast<int>(pill.top + 7),
                    std::max(0, static_cast<int>(pill.right - pill.left - 20)),
                    static_cast<int>(pill.bottom - pill.top - 14), TRUE);
+        ShowWindow(g_address, showChrome ? SW_SHOW : SW_HIDE);
     }
     if (g_findEdit) {
-        for (HWND c : {g_findEdit, g_findPrev, g_findNext, g_findClose}) if (c) ShowWindow(c, g_findVisible ? SW_SHOW : SW_HIDE);
-        LayoutFindBar();
+        const bool showFind = showChrome && g_findVisible;
+        for (HWND c : {g_findEdit, g_findPrev, g_findNext, g_findClose}) if (c) ShowWindow(c, showFind ? SW_SHOW : SW_HIDE);
+        if (showFind) LayoutFindBar();
     }
 }
 
+RECT PaneContentBounds(const BrowserPane& pane) {
+    RECT b = ContentBounds();
+    if (!IsSplitActive()) return b;
+    const LONG gap = 4;
+    const LONG mid = b.left + (b.right - b.left) / 2;
+    if (&pane == &g_pane) b.right = std::max(b.left, mid - gap / 2);
+    else b.left = std::min(b.right, mid + (gap - gap / 2));
+    return b;
+}
+
 void LayoutContent() {
-    RECT bounds = ContentBounds();
-    for (auto& tab : g_tabs) {
-        if (tab->controller) tab->controller->put_Bounds(bounds);
+    if (IsSplitActive() && g_splitPane) {
+        RECT left = PaneContentBounds(g_pane);
+        RECT right = PaneContentBounds(*g_splitPane);
+        for (auto& tab : g_pane.tabs) if (tab && tab->controller) tab->controller->put_Bounds(left);
+        for (auto& tab : g_splitPane->tabs) if (tab && tab->controller) tab->controller->put_Bounds(right);
+    } else {
+        RECT bounds = ContentBounds();
+        for (auto& tab : g_pane.tabs) if (tab && tab->controller) tab->controller->put_Bounds(bounds);
+        if (g_splitPane) for (auto& tab : g_splitPane->tabs) if (tab && tab->controller) { tab->controller->put_IsVisible(FALSE); tab->controller->put_Bounds(bounds); }
     }
 }
 
@@ -1987,6 +2100,9 @@ void PaintToolbarButton(const DRAWITEMSTRUCT& item) {
         case kPipButton:
             glyph = L"\uE714";  // FR-VID1: video / Picture in Picture
             break;
+        case kSplitViewButton:
+            glyph = L"\uE8A3";  // TwoPage/view mode: Normal / Split / Focus
+            break;
         case kMediaButton:
             glyph = L"\uE896";  // Download / media menu (grouped dropdown beside PiP)
             break;
@@ -1998,6 +2114,7 @@ void PaintToolbarButton(const DRAWITEMSTRUCT& item) {
     else if (marked && item.CtlID == kStarButton) color = RGB(238, 170, 32);
     else if (marked && item.CtlID == kShieldButton) color = RGB(46, 164, 79);
     else if (!marked && item.CtlID == kShieldButton) color = RGB(176, 80, 80);
+    else if (item.CtlID == kSplitViewButton && g_viewMode != ViewMode::Normal) color = RGB(40, 120, 220);
     HGDIOBJ old = SelectObject(item.hDC, g_iconFont ? g_iconFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
     SetBkMode(item.hDC, TRANSPARENT);
     SetTextColor(item.hDC, color);
@@ -3275,14 +3392,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_star = CreateChild(hwnd, L"BUTTON", L"", BS_OWNERDRAW, 0, kStarButton);
             g_shield = CreateChild(hwnd, L"BUTTON", L"", BS_OWNERDRAW, 0, kShieldButton);
             g_pip = CreateChild(hwnd, L"BUTTON", L"", BS_OWNERDRAW, 0, kPipButton);
+            g_splitBtn = CreateChild(hwnd, L"BUTTON", L"", BS_OWNERDRAW, 0, kSplitViewButton); // view modes: Normal/Split/Focus
             g_media = CreateChild(hwnd, L"BUTTON", L"", BS_OWNERDRAW, 0, kMediaButton);
             g_address = CreateChild(hwnd, L"EDIT", L"", ES_AUTOHSCROLL, 0, kAddressBar);
             g_addressProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(g_address, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(AddressProc)));
-            for (HWND btn : {g_back, g_forward, g_reload, g_star, g_shield, g_pip, g_media}) {
+            for (HWND btn : {g_back, g_forward, g_reload, g_star, g_shield, g_pip, g_splitBtn, g_media}) {
                 if (!g_buttonProc) g_buttonProc = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(btn, GWLP_WNDPROC));
                 SetWindowLongPtrW(btn, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ButtonProc));
             }
-            for (HWND child : {g_back, g_forward, g_reload, g_star, g_shield, g_pip, g_media, g_address}) {
+            for (HWND child : {g_back, g_forward, g_reload, g_star, g_shield, g_pip, g_splitBtn, g_media, g_address}) {
                 SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(g_uiFont), TRUE);
             }
             return 0;
@@ -3323,30 +3441,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HDC dc = BeginPaint(hwnd, &ps);
             RECT client{};
             GetClientRect(hwnd, &client);
-            RECT chrome{0, 0, client.right, ChromeHeight()};
-            HBRUSH bg = CreateSolidBrush(kThemeBg);
-            FillRect(dc, &chrome, bg);
-            DeleteObject(bg);
-            FillRoundedRect(dc, AddressPillRect(), 16, RGB(255, 255, 255), kThemeBorder);
-            PaintMenuBar(dc);
-            PaintTabStrip(dc);
-            if (g_findVisible) {
-                RECT fr{0, FindBarTop(), client.right, FindBarTop() + kFindBarHeight};
-                HBRUSH fb = CreateSolidBrush(RGB(240, 242, 245));
-                FillRect(dc, &fr, fb);
-                DeleteObject(fb);
-                HGDIOBJ fo = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, RGB(80, 84, 88));
-                RECT lbl{std::max(8L, static_cast<LONG>(client.right - 430)), static_cast<LONG>(FindBarTop()), std::max(50L, static_cast<LONG>(client.right - 390)), static_cast<LONG>(FindBarTop() + kFindBarHeight)};
-                DrawTextW(dc, L"Find", -1, &lbl, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-                SelectObject(dc, fo);
+            if (g_focusMode) {
+                HBRUSH bg = CreateSolidBrush(RGB(18, 18, 18));
+                FillRect(dc, &client, bg);
+                DeleteObject(bg);
+            } else {
+                RECT chrome{0, 0, client.right, ChromeHeight()};
+                HBRUSH bg = CreateSolidBrush(kThemeBg);
+                FillRect(dc, &chrome, bg);
+                DeleteObject(bg);
+                FillRoundedRect(dc, AddressPillRect(), 16, RGB(255, 255, 255), kThemeBorder);
+                PaintMenuBar(dc);
+                PaintTabStrip(dc);
+                if (g_findVisible) {
+                    RECT fr{0, FindBarTop(), client.right, FindBarTop() + kFindBarHeight};
+                    HBRUSH fb = CreateSolidBrush(RGB(240, 242, 245));
+                    FillRect(dc, &fr, fb);
+                    DeleteObject(fb);
+                    HGDIOBJ fo = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+                    SetBkMode(dc, TRANSPARENT);
+                    SetTextColor(dc, RGB(80, 84, 88));
+                    RECT lbl{std::max(8L, static_cast<LONG>(client.right - 430)), static_cast<LONG>(FindBarTop()), std::max(50L, static_cast<LONG>(client.right - 390)), static_cast<LONG>(FindBarTop() + kFindBarHeight)};
+                    DrawTextW(dc, L"Find", -1, &lbl, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    SelectObject(dc, fo);
+                }
+                PaintBookmarkBar(dc);
             }
-            PaintBookmarkBar(dc);
             EndPaint(hwnd, &ps);
             return 0;
         }
         case WM_LBUTTONDOWN: {
+            if (g_focusMode) break;
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp);
             if (y < BookmarkBarTop() || y >= BookmarkBarTop() + kBookmarkBarHeight) CloseAllFolderPopups();
@@ -3408,6 +3533,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case WM_MOUSEMOVE: {
+            if (g_focusMode) break;
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp);
             const int h = HitTestMenu(x, y);
@@ -3501,6 +3627,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
                 if (id == kPipButton) { RequestSelfPiP(); return 0; }  // FR-VID1
+                if (id == kSplitViewButton) { ShowViewModeMenu(); return 0; } // Normal / Split / Focus
                 if (id == kMediaButton) { ShowMediaMenu(); return 0; }
                 if (id == kFindNext) { FindInPage(true); return 0; }
                 if (id == kFindPrev) { FindInPage(false); return 0; }
@@ -3698,10 +3825,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
                 return S_OK;
             }).Get());
     MSG msg{};
+    DWORD g_winMChordTick = 0;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         if (msg.message == WM_KEYDOWN && msg.wParam == VK_TAB && IsCtrlDown()) {
             HandleShortcut(VK_TAB, IsShiftDown());
             continue;
+        }
+        if (msg.message == WM_KEYDOWN) {
+            const bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000);
+            const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            if (msg.wParam == VK_F11) { ToggleFocusMode(); continue; }
+            if (IsCtrlDown() && altDown) {
+                if (msg.wParam == '1') { SetViewMode(ViewMode::Normal); continue; }
+                if (msg.wParam == '2') { SetViewMode(ViewMode::Split); continue; }
+                if (msg.wParam == '3') { SetViewMode(ViewMode::Focus); continue; }
+            }
+            // Best-effort in-app chord for Win+M+1/2/3 (note: Win+M is a Windows shell shortcut and may be intercepted).
+            if (winDown && msg.wParam == 'M') { g_winMChord = true; g_winMChordTick = GetTickCount(); continue; }
+            if (g_winMChord) {
+                if (GetTickCount() - g_winMChordTick > 1500) g_winMChord = false;
+                else if (msg.wParam == '1') { g_winMChord = false; SetViewMode(ViewMode::Normal); continue; }
+                else if (msg.wParam == '2') { g_winMChord = false; SetViewMode(ViewMode::Split); continue; }
+                else if (msg.wParam == '3') { g_winMChord = false; SetViewMode(ViewMode::Focus); continue; }
+            }
         }
         if (g_inputDlg && IsWindow(g_inputDlg) && IsDialogMessageW(g_inputDlg, &msg)) continue;
         TranslateMessage(&msg);
