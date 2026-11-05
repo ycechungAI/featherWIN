@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "featherWIN popup test",
+  "version": "0.1",
+  "description": "Minimal extension with a toolbar popup, used by the featherWIN extension spike.",
+  "action": {
+    "default_title": "featherWIN popup test",
+    "default_popup": "popup.html"
+  }
+}

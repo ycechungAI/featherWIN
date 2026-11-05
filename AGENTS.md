@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repo.
 
 ## What this project is
 
-featherWIN is a Windows-only port of Feather (https://github.com/ycechungAI/feather), a tiny macOS browser that wraps the OS web engine. Target: the same app experience on Windows, using the Servo engine (Rust, `servo` crate embedding API). No Chromium-based engine. Browser extensions are out of scope (see SPEC.md `C-ADDON`).
+featherWIN is a Windows-only port of Feather (https://github.com/ycechungAI/feather), a tiny macOS browser that wraps the OS web engine. Target: the same app experience on Windows, using the WebView2 control (Chromium engine, from C++ with Win32 and the WebView2 SDK; see docs/adr/0001-webview2-engine.md). Chromium extensions can be loaded through WebView2 with limits (see SPEC.md `C-ADDON`).
 
 See [SPEC.md](SPEC.md) for requirements (IDs like `FR-TAB1`), [ROADMAP.md](ROADMAP.md) for the plan, and [docs/](docs/) for decisions.
 

@@ -4,10 +4,10 @@ Each phase ends with an exit check. Do not start the next phase until the check 
 
 ## Phase 0: feasibility (spikes)
 
-- Spike A: a Servo window (via the `servo` crate) that loads a page, with a basic address bar. Exit: list 10 common sites with pass/fail, and measure launch time and memory against `NF-1` and `NF-2`.
-- Spike B: Shields via Servo's resource-load delegate. Exit: blocks ads on 5 ad-heavy sites; record the approach in DECISIONS.md.
-- Spike C: Video. Play an MP4 and an HLS stream in Servo. Exit: works or is documented as not possible (`FR-VID*`).
-- Spike D: Windows build. Cross-compile and run on Windows 11 (x64). Exit: the window opens and loads a page.
+- Spike A: a WebView2 window (C++, Win32) that loads a page, with a basic address bar. Exit: list 10 common sites with pass/fail, and measure launch time and memory against `NF-1` and `NF-2`.
+- Spike B: Shields via WebView2's `WebResourceRequested` filter. Exit: blocks ads on 5 ad-heavy sites; record the approach in DECISIONS.md.
+- Spike C: Video. Play an MP4 and an HLS stream in WebView2. Exit: works or is documented as not possible (`FR-VID*`).
+- Spike D: Windows build. Build with CMake and MSVC on Windows 11 (x64). Exit: the window opens and loads a page.
 - Spike E: Downloads save to the Downloads folder with Mark-of-the-Web (`FR-DL2`). Exit: works or documented.
 - (Extensions are dropped; no spike.)
 

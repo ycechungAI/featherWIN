@@ -2,7 +2,14 @@
 
 Append-only. Newest entry at the top.
 
-## 2026-11-04 Engine is Servo (not Chromium, not Gecko)
+## 2026-11-04 Engine is WebView2 (C++), superseding the Servo choice below
+
+**Decision:** featherWIN uses the WebView2 control from C++ (Win32 + WebView2 SDK). The user confirmed this after the downsides were laid out: Chromium, which the Servo entry ruled out, and an early Servo would be harder to ship. Servo is kept as a dropped option.
+**Why:** It's Windows-only, so the Chromium runtime is already on the machine, which gives a smaller and faster build. Site compatibility, video and tab suspend are far ahead of Servo. The user found C++ easier to code than Rust here. Full reasoning and consequences: [docs/adr/0001-webview2-engine.md](../docs/adr/0001-webview2-engine.md).
+**Extensions:** WebView2 supports loading Chromium extensions (`CoreWebView2Profile.AddBrowserExtensionAsync`, enabled with `AreBrowserExtensionsEnabled`), so `FR-EXT*` is back in scope for Phase 3 with limits. Store install isn't supported. An earlier note in this file said WebView2 had no extension support; that was wrong, and this entry replaces it.
+**Open:** verify WebView2 runtime telemetry and update behavior against `C-PRIV` before a release, and test which extensions actually load.
+
+## 2026-11-04 Engine is Servo (not Chromium, not Gecko) — superseded by the WebView2 entry above
 
 **Decision:** featherWIN uses Servo, the Rust browser engine, via its `servo` crate embedding API. The user ruled out Chromium-based engines (WebView2, CEF, Electron). Gecko has no supported desktop embedding API.
 **Why:** The user wants no Chromium. Servo is the only embeddable non-Chromium engine. `servo` 0.1.0 is on crates.io (April 2026); monthly releases followed (0.3.0 by June 2026).

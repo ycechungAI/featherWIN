@@ -10,8 +10,8 @@ A tiny Windows browser with the same feature set and feel as Feather for macOS, 
 
 | ID | Constraint |
 | --- | --- |
-| `C-ENG` | The web engine is Servo (Rust, `servo` crate embedding API). No Chromium-based engine (WebView2, CEF, Electron) and no Gecko. See DECISIONS.md. |
-| `C-ADDON` | No browser extension support (Servo has none). `FR-EXT*` is out of scope for now. |
+| `C-ENG` | The web engine is Microsoft Edge WebView2 (Chromium), the Windows system web control, used from C++ (Win32 and the WebView2 SDK). No Gecko and no other embedded engine (CEF, Electron). Supersedes the Servo choice; see [ADR 0001](docs/adr/0001-webview2-engine.md). |
+| `C-ADDON` | Chromium extensions can be loaded from unpacked folders through WebView2 (`AddBrowserExtensionAsync`). Store install and browser UI for extensions are limited. `FR-EXT*` is planned for Phase 3, pending the Windows test. |
 | `C-SIZE` | Target installer size under 5 MB, not counting the WebView2 runtime (preinstalled on Windows 10 21H2+ and Windows 11). |
 | `C-PRIV` | No telemetry, no accounts, no background processes, no login items, no network calls of its own. |
 | `C-OS` | Windows 10 (21H2) and Windows 11, x64 and ARM64. |
