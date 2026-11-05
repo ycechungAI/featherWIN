@@ -93,6 +93,7 @@ Each requirement lists the Feather macOS behavior it mirrors.
 
 ### Settings
 
+- `FR-CACHE1` Disk cache limit is user-set, from 250 MB to 5 GB, default 500 MB, as in Feather. Stored in `%APPDATA%\featherWIN` (`FR-SET2`). Implementation idea: Chromium's `--disk-cache-size=<bytes>` switch, passed through the environment options' `AdditionalBrowserArguments`. **[verify]** on Windows. Feather's trimming (keep scripts and styles of the 20 most visited sites, drop video and large images) needs its own work on WebView2.
 - `FR-SET1` Settings (Ctrl+,): search engine, home page, background sleep delay, cache limit (250 MB–5 GB, default 500 MB), Shields, HTTPS-only mode, search suggestions, restore on launch, site exceptions, default-browser button, developer tools toggle.
 - `FR-SET2` Changes apply immediately. Settings stored in the user's app data folder (`%APPDATA%\featherWIN`).
 - `FR-SET3` Debug logging (`FEATHERWIN_DEBUG=1`) logs requests, saved downloads, failed loads, page crashes.

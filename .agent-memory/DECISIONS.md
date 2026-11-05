@@ -2,6 +2,11 @@
 
 Append-only. Newest entry at the top.
 
+## 2026-11-04 Disk cache limit is user-set (250 MB to 5 GB, default 500 MB)
+
+**Decision:** The cache limit is a user setting, as in Feather. 250 MB and 500 MB are the starting points; the default is 500 MB. It fits the low-memory and small-footprint priorities, since the user can lower it.
+**Open:** whether Chromium's `--disk-cache-size` switch works through WebView2's `AdditionalBrowserArguments` (test on the Windows VM).
+
 ## 2026-11-04 Priorities: ease of use, small install, low memory, above everything else
 
 **Decision:** When two options conflict, pick the one that is easier to use, keeps the install small, and uses less memory. Security is not traded away: it's required, but it's done with the cheapest option that meets it (for example, the Windows built-in SmartScreen rather than a bundled scanner).
