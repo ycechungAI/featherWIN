@@ -1,0 +1,21 @@
+# Decisions
+
+Append-only. Newest entry at the top.
+
+## 2026-11-04 Engine is Servo (not Chromium, not Gecko)
+
+**Decision:** featherWIN uses Servo, the Rust browser engine, via its `servo` crate embedding API. The user ruled out Chromium-based engines (WebView2, CEF, Electron). Gecko has no supported desktop embedding API.
+**Why:** The user wants no Chromium. Servo is the only embeddable non-Chromium engine. `servo` 0.1.0 is on crates.io (April 2026); monthly releases followed (0.3.0 by June 2026).
+**Risks, accepted by the user:**
+- Servo has no 1.0 and says production use on arbitrary content needs careful evaluation. Site compatibility is far below Chromium and Gecko. Spike A must measure it on real sites.
+- No browser extension support. `FR-EXT*` is dropped for now; SPEC.md must say so.
+- Video playback is partial (GStreamer; MP4 compat improved in May 2026). `FR-VID*` and DRM need checking.
+- Shields: Servo's resource-load delegate can intercept requests, so the blocklist can be a request filter (`FR-SHD1`).
+**Alternatives considered:** WebView2 (Chromium, rejected by the user); CEF and Electron (Chromium, rejected); Firefox fork or Firefox as host (Gecko is large or not standalone).
+
+## 2026-11-04 Engine is Edge WebView2 (Chromium), not Gecko
+
+**Decision:** featherWIN uses the WebView2 control. "Firefox-style" means Firefox's UI and add-on conventions where WebView2 allows, not the Gecko engine.
+**Why:** Feather depends on the OS engine (WebKit on macOS). WebView2 is the Windows system web engine and keeps the app small. Gecko can't be embedded in a small app.
+**Alternatives considered:** Embedding Gecko (rejected: far too large for a tiny browser); a Chromium build of our own (rejected: not tiny, and the same security-update problem Feather avoids).
+**Open:** whether the user accepts Chrome-based add-on support in place of Firefox-only add-ons (see SPEC.md `C-ADDON`).

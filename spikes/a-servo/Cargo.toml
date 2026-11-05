@@ -1,0 +1,11 @@
+# Spike A: a Servo window that loads one page. Not the product; a feasibility check.
+# Pinned to servo 0.4.0: the newest version whose docs.rs build succeeded (0.7.0 failed).
+[package]
+name = "featherwin-spike-a"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+servo = "=0.4.0"
+winit = "0.30.13"
