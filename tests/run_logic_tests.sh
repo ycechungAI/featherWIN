@@ -4,5 +4,5 @@
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p build
-${CXX:-c++} -std=c++17 -Wall -Wextra -Werror -Isrc tests/logic_test.cpp src/blocklist.cpp src/url.cpp -o build/logic_test
+${CXX:-c++} -std=c++17 -Wall -Wextra -Werror -Isrc tests/logic_test.cpp src/blocklist.cpp src/bookmarks.cpp src/url.cpp -o build/logic_test
 ./build/logic_test

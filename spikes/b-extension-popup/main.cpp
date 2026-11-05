@@ -104,7 +104,7 @@ void CreateWebView() {
                     return S_OK;
                 }
                 g_env = env;
-                g_env->CreateCoreWebView2ControllerAsync(
+                g_env->CreateCoreWebView2Controller(
                     g_hwnd,
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                         [](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {

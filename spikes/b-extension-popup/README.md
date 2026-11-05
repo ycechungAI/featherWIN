@@ -37,5 +37,5 @@ or a call failed with an HRESULT, paste that line. Any other extension folder ca
 ## Notes
 
 - This is a feasibility spike, not product code. The window only shows the popup page.
-- The C++ was checked against the WebView2 1.0.2739.15 headers but has not been compiled yet. A
-  compile error is a useful result too: paste it.
+- Built and run on Windows 11 (x64 build). Result: the popup page opened with the title "featherWIN
+  popup works". See `.agent-memory/STATE.md`.

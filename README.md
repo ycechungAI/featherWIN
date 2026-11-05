@@ -1,53 +1,69 @@
 # featherWIN
 
-Like a Feather, the tiny, simple Windows web browser. The Windows sibling of
-[Feather](https://github.com/ycechungAI/feather) (macOS, Swift + WebKit).
+A tiny, simple Windows web browser — the Windows sibling of
+[Feather](https://github.com/ycechungAI/feather) (macOS).
 
-Windows has no WebKit, so featherWIN uses **Microsoft WebView2**, the Chromium engine that Edge
-and most Windows apps use. It's built with **C# and WPF** on .NET 8.
+featherWIN is **Windows-only** and uses **Microsoft Edge WebView2** (Chromium engine) from
+**C++ / Win32** with the WebView2 SDK (see [docs/adr/0001-webview2-engine.md](docs/adr/0001-webview2-engine.md)).
+It uses the WebView2 runtime already present on supported Windows systems (no bundled browser engine).
 
-**Status: early scaffold, not yet built or run on Windows.** The code is written but untested.
+## Status
 
-## What works in this scaffold
+Active development. The app builds and runs on Windows; features and compatibility are still evolving.
+See [SPEC.md](SPEC.md), [ROADMAP.md](ROADMAP.md), and [docs/](docs/).
 
-- Tabs (Ctrl+T new, Ctrl+W close)
-- Address bar: enter a web address, a bare domain or a search
-- Back, forward, reload (F5 or Ctrl+R), Ctrl+L focuses the address bar
-- Ad and tracker blocking (Shields) with a checkbox to turn it off, from a starter blocklist in
-  `Shields.cs`
-- Popups open as new tabs
+## WebView2 and extensions (plain English)
 
-## Planned, after the core
+**WebView2 gives featherWIN the Chromium *engine*** — so web pages generally behave like they do in
+Chrome/Edge.
 
-- Full blocklist (port Feather's rules) and per-site Shields
-- Bookmarks and bookmark bar
-- History, downloads, and session restore
-- Find on page, private windows
+**It does *not* give featherWIN the full Chrome browser extension platform.** Chrome Web Store
+install, extension toolbar buttons/action UI, and full Chrome-like extension behavior are browser
+features that WebView2 does not fully expose to host apps.
 
-Feather's README lists the full feature set; featherWIN follows it as the milestones land.
+What works (best-effort, varies by extension):
+- Load **unpacked** extension folders (with `manifest.json`) from `%APPDATA%\featherWIN\extensions\`
+- **Extensions > Add Unpacked Extension...** and **Install Extension from ZIP/CRX...** (local files only)
+- Open extension popup/options pages from the **Extensions** menu when available
 
-## Build and run (on Windows)
+What does **not** work like Chrome/Firefox:
+- Chrome Web Store one-click install / store `.crx` install flow
+- Native extension toolbar action buttons
+- Firefox `.xpi` / AMO extensions (different engine; WebView2 is Chromium-based)
+- Some extensions (especially those relying on Chrome-specific UI/APIs) may fail or behave differently
 
-You need:
+For password managers like Bitwarden, consider the **official Bitwarden Windows desktop app** if the
+browser extension is unreliable in WebView2. featherWIN includes a built-in **Picture in Picture**
+button (`FR-VID1`) as a simpler alternative to PiP extensions.
 
-- Windows 10 (1809 or later) or Windows 11
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- The WebView2 Runtime. Windows 11 and recent Windows 10 have it already; otherwise install the
-  Evergreen runtime from Microsoft.
+## Privacy
+
+featherWIN aims for a simple, private browser: no telemetry, no accounts, no background processes,
+and no app network calls of its own (except browsing and search suggestions when you enable them).
+See `C-PRIV` in [SPEC.md](SPEC.md). WebView2 runtime behavior should be verified before release.
+
+## Build (Windows)
+
+Requirements:
+- Windows 10/11
+- Visual Studio Build Tools / MSVC (C++), CMake, and Windows SDK
+- WebView2 SDK is fetched/configured by the project’s CMake setup (see [CMakeLists.txt](CMakeLists.txt))
 
 ```powershell
-git clone https://github.com/ycechungAI/featherWIN
-cd featherWIN
-dotnet build
-dotnet run
+cmake -S . -B build -A x64
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+.\build\Release\featherwin.exe
 ```
 
-## Layout
+## Layout (key files)
 
-| File | What it is |
+| Path | Purpose |
 |---|---|
-| `FeatherWin.csproj` | project file, .NET 8, WPF, WebView2 package |
-| `App.xaml`, `App.xaml.cs` | application entry point |
-| `MainWindow.xaml`, `MainWindow.xaml.cs` | window, tabs, address bar, keyboard shortcuts |
-| `Shields.cs` | ad and tracker blocking through WebView2 request filtering |
-| `app.manifest` | per-monitor DPI awareness |
+| `src/main.cpp` | Win32/WebView2 app (tabs, chrome/UI, bookmarks, downloads/history/settings, extensions, PiP) |
+| `src/bookmarks.*` | Bookmark tree and Netscape import/export helpers |
+| `src/url.*` | URL/search input handling (`FR-NAV1/2`) |
+| `src/blocklist.*` | Shields host blocking helpers (`FR-SHD*`) |
+| `tests/logic_test.cpp` | Pure logic tests |
+| `spikes/` | WebView2/feature spikes (e.g., extension popup/options) |
+| `SPEC.md`, `ROADMAP.md`, `docs/adr/` | Requirements, plan, and decisions |
