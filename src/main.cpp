@@ -3542,13 +3542,44 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    // Opt-in benchmark/test harness: isolated profile and/or URLs to open (skips session restore).
+    // Usage: featherwin.exe [--user-data-dir <dir>] [url1 url2 ...]
+    std::wstring benchProfileDir;
+    std::vector<std::wstring> benchUrls;
+    {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        if (argv) {
+            for (int i = 1; i < argc; ++i) {
+                std::wstring a = argv[i] ? argv[i] : L"";
+                auto takeValue = [&](const wchar_t* flag) -> bool {
+                    size_t n = wcslen(flag);
+                    if (a == flag && i + 1 < argc && argv[i + 1]) { benchProfileDir = argv[++i]; return true; }
+                    if (a.rfind(flag, 0) == 0 && a.size() > n && a[n] == L'=') { benchProfileDir = a.substr(n + 1); return true; }
+                    return false;
+                };
+                if (takeValue(L"--user-data-dir") || takeValue(L"--profile")) continue;
+                if (!a.empty() && a[0] != L'-') benchUrls.push_back(a);
+            }
+            LocalFree(argv);
+        }
+    }
     g_uiFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     g_smallFont = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     g_iconFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe MDL2 Assets");
-    PWSTR appData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
-        g_dataFolder = TakeString(appData) + L"\\featherWIN";
+    if (!benchProfileDir.empty()) {
+        // Full isolation for reproducible benchmarks: don't touch user's normal featherWIN data.
+        g_dataFolder = benchProfileDir + L"\\AppData";
+        SHCreateDirectoryExW(nullptr, benchProfileDir.c_str(), nullptr);
         SHCreateDirectoryExW(nullptr, g_dataFolder.c_str(), nullptr);
+    } else {
+        PWSTR appData = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
+            g_dataFolder = TakeString(appData) + L"\\featherWIN";
+            SHCreateDirectoryExW(nullptr, g_dataFolder.c_str(), nullptr);
+        }
+    }
+    if (!g_dataFolder.empty()) {
         g_bookmarkPath = g_dataFolder + L"\\bookmarks.txt";
         g_shieldExceptionsPath = g_dataFolder + L"\\shields-exceptions.txt";
         g_extensionsFolder = g_dataFolder + L"\\extensions";
@@ -3582,10 +3613,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     if (g_main && appIconSm) SendMessageW(g_main, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(appIconSm));
     ShowWindow(g_main, show);
     std::wstring dataFolder;
-    PWSTR localAppData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
-        dataFolder = TakeString(localAppData) + L"\\featherWIN\\WebView2";
+    if (!benchProfileDir.empty()) {
+        dataFolder = benchProfileDir + L"\\WebView2";
         SHCreateDirectoryExW(nullptr, dataFolder.c_str(), nullptr);
+    } else {
+        PWSTR localAppData = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
+            dataFolder = TakeString(localAppData) + L"\\featherWIN\\WebView2";
+            SHCreateDirectoryExW(nullptr, dataFolder.c_str(), nullptr);
+        }
     }
     auto options = Make<CoreWebView2EnvironmentOptions>();
     ComPtr<ICoreWebView2EnvironmentOptions6> options6;
@@ -3595,12 +3631,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     CreateCoreWebView2EnvironmentWithOptions(
         nullptr, dataFolder.empty() ? nullptr : dataFolder.c_str(), options.Get(),
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-            [](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            [benchUrls](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                 if (FAILED(result)) {
                     MessageBoxW(g_main, L"WebView2 Runtime is required.", L"featherWIN", MB_ICONERROR | MB_OK);
                     return S_OK;
                 }
                 g_env = env;
+                if (!benchUrls.empty()) {
+                    // Controlled benchmark/test: open requested URLs, skip session restore.
+                    for (size_t i = 0; i < benchUrls.size(); ++i) NewTab(benchUrls[i], i == 0);
+                    if (!g_tabs.empty() && g_tabs[0]->webview) LoadDefaultExtensions(g_tabs[0]->webview.Get());
+                    return S_OK;
+                }
                 auto session = LoadSessionData();
                 if (session.empty()) {
                     NewTab(kHomePage, true);
