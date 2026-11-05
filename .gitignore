@@ -430,3 +430,10 @@ FodyWeavers.xsd
 
 # C++ build output
 build/
+
+# CPack / installers
+_CPack_Packages/
+featherWIN-*-win64.zip
+*.msi
+*.exe.installer
+

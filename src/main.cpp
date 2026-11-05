@@ -19,6 +19,7 @@
 
 #include "blocklist.h"
 #include "bookmarks.h"
+#include "resource.h"
 #include "url.h"
 
 using Microsoft::WRL::Callback;
@@ -3563,10 +3564,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
         LoadSettings();
         LoadTabGroups(); // FR-GRP1
     }
+    HICON appIcon = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_FEATHERWIN), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED));
+    HICON appIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_FEATHERWIN), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = instance;
+    wc.hIcon = appIcon ? appIcon : LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIconSm = appIconSm ? appIconSm : LoadIconW(nullptr, IDI_APPLICATION);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = kWindowClass;

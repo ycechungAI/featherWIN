@@ -303,10 +303,21 @@ void TestNetscapeBookmarks() {
     CHECK(t3[0]->url == L"https://e.test/?a=1&amp;b=2");
     CHECK(t3[0]->title == L"A & B");
 
+    // Multiple bookmarks and folders
+    const std::wstring html4 = L"<DL><DT><A HREF=\"https://1.test/\">1</A><DT><H3>G</H3><DL><DT><A HREF=\"https://2.test/\">2</A><DT><A HREF=\"https://3.test/\">3</A></DL><DT><A HREF=\"https://4.test/\">4</A></DL>";
+    BookmarkTree t4 = ParseNetscapeBookmarks(html4);
+    CHECK(t4.size() == 3);
+    CHECK(t4[0]->url == L"https://1.test/");
+    CHECK(t4[1]->type == BookmarkNode::Folder);
+    CHECK(t4[1]->children.size() == 2);
+    CHECK(t4[1]->children[1]->url == L"https://3.test/");
+    CHECK(t4[2]->url == L"https://4.test/");
+
     // Empty / no bookmarks
     CHECK(ParseNetscapeBookmarks(L"").empty());
     CHECK(ParseNetscapeBookmarks(L"<DL><p></DL>").empty());
     CHECK(ParseNetscapeBookmarks(L"not html").empty());
+    CHECK(ParseNetscapeBookmarks(L"<html><body>hi</body></html>").empty());
 
     // Export empty
     BookmarkTree empty;
@@ -315,16 +326,103 @@ void TestNetscapeBookmarks() {
     CHECK(ex.find(L"</DL><p>") != std::wstring::npos);
 }
 
+// Feather-consistency: additional URLTools-like regressions
+void TestToUrlMore() {
+    CHECK(ToUrl(L"https://already.secure/path?q=1") == L"https://already.secure/path?q=1");
+    CHECK(ToUrl(L"http://insecure.test") == L"http://insecure.test");
+    CHECK(ToUrl(L"  example.org  ") == L"https://example.org");
+    CHECK(ToUrl(L"my-site.co") == L"https://my-site.co");
+    CHECK(ToUrl(L"a.io/b") == L"https://a.io/b");
+    CHECK(ToUrl(L"192.168.1.1") == L"https://192.168.1.1");
+    CHECK(ToUrl(L"foo bar baz") == L"https://duckduckgo.com/?q=foo%20bar%20baz");
+    CHECK(ToUrl(L"~tilde") == L"https://duckduckgo.com/?q=~tilde");
+    CHECK(ToUrl(L"dash-under_score.dot") == L"https://dash-under_score.dot");
+    CHECK(ToUrl(L"?query") == L"https://duckduckgo.com/?q=%3Fquery");
+    CHECK(ToUrl(L".leadingdot") == L"https://.leadingdot"); // has dot, no space => treated as domain-like by current impl
+    CHECK(ToUrl(L"trailing.") == L"https://trailing.");
+}
+
+// Feather-consistency: Shields/host rules regressions
+void TestHostAndBlocklistMore() {
+    CHECK(HostOf(L"https://user@example.com/path") == L"user@example.com"); // documents current simplification (userinfo included)
+    CHECK(HostOf(L"https://example.com:80") == L"example.com");
+    CHECK(HostOf(L"https://example.com?") == L"example.com");
+    CHECK(HostOf(L"https://example.com#") == L"example.com");
+    CHECK(HostOf(L"HTTPS://Example.COM/") == L"example.com");
+    CHECK(HostOf(L"ws://socket.test/") == L"socket.test");
+    CHECK(IsBlockedHost(L"ads.doubleclick.net"));
+    CHECK(IsBlockedHost(L"tpc.googlesyndication.com"));
+    CHECK(!IsBlockedHost(L"doubleclick.com")); // different domain
+    CHECK(!IsBlockedHost(L"hotjar.io"));
+    CHECK(!IsBlockedHost(L"outbrain.org"));
+}
+
+// Feather-consistency: Bookmarks regressions
+void TestBookmarksMore() {
+    BookmarkTree tree;
+    BookmarkNode* f = AddFolder(tree, L"Folder");
+    auto b = std::make_unique<BookmarkNode>(); b->type = BookmarkNode::Bookmark; b->title = L"Nested"; b->url = L"https://nested.test/";
+    f->children.push_back(std::move(b));
+    CHECK(IsBookmarked(tree, L"https://nested.test/"));
+    CHECK(FindBookmarkNode(tree, L"https://nested.test/") != nullptr);
+    CHECK(RemoveNode(tree, FindBookmarkNode(tree, L"https://nested.test/")));
+    CHECK(!IsBookmarked(tree, L"https://nested.test/"));
+
+    BookmarkTree t2;
+    AddBookmark(t2, L"One", L"https://1.test/");
+    AddBookmark(t2, L"Two", L"https://2.test/");
+    MoveNode(t2, t2[1].get(), nullptr, nullptr); // append (no-op positionally at end)
+    CHECK(t2.size() == 2);
+    CHECK(t2[1]->url == L"https://2.test/");
+
+    // Sanitize tabs/newlines in titles/urls
+    BookmarkTree t3;
+    CHECK(AddBookmark(t3, L"A\tB\nC", L"https://x.test/\tpath"));
+    CHECK(t3[0]->title.find(L'\t') == std::wstring::npos);
+    CHECK(t3[0]->title.find(L'\n') == std::wstring::npos);
+    CHECK(t3[0]->url.find(L'\t') == std::wstring::npos);
+    BookmarkNode* sf = AddFolder(t3, L"F\r\nG");
+    CHECK(sf->title.find(L'\r') == std::wstring::npos);
+    CHECK(sf->title.find(L'\n') == std::wstring::npos);
+
+    // Remove folder
+    CHECK(RemoveNode(t3, sf));
+    CHECK(t3.size() == 1);
+
+    // More round-trips / structure
+    BookmarkTree t4;
+    BookmarkNode* fa = AddFolder(t4, L"A");
+    BookmarkNode* fb = AddFolder(t4, L"B");
+    auto c1 = std::make_unique<BookmarkNode>(); c1->type=BookmarkNode::Bookmark; c1->title=L"C1"; c1->url=L"https://c1.test/"; fa->children.push_back(std::move(c1));
+    auto c2 = std::make_unique<BookmarkNode>(); c2->type=BookmarkNode::Bookmark; c2->title=L"C2"; c2->url=L"https://c2.test/"; fb->children.push_back(std::move(c2));
+    std::wstring ser = SerializeBookmarks(t4);
+    BookmarkTree t4b = DeserializeBookmarks(ser);
+    CHECK(t4b.size() == 2);
+    CHECK(t4b[0]->children.size() == 1);
+    CHECK(t4b[1]->children.size() == 1);
+    CHECK(t4b[0]->children[0]->url == L"https://c1.test/");
+    CHECK(t4b[1]->children[0]->url == L"https://c2.test/");
+
+    // Netscape export contains structure markers
+    std::wstring ns = SerializeNetscapeBookmarks(t4);
+    CHECK(ns.find(L"<H3>A</H3>") != std::wstring::npos);
+    CHECK(ns.find(L"<H3>B</H3>") != std::wstring::npos);
+    CHECK(ns.find(L"https://c1.test/") != std::wstring::npos);
+}
+
 }  // namespace
 
 int main() {
     TestHostOf();
     TestIsBlockedHost();
+    TestHostAndBlocklistMore(); // Feather: shields/host rules
     TestToUrl();
+    TestToUrlMore();            // Feather: URL tools
     TestBookmarksBasic();
     TestBookmarksMoveAndCycles();
     TestBookmarksSerializeRegression();
-    TestNetscapeBookmarks();
+    TestBookmarksMore();        // Feather: bookmarks
+    TestNetscapeBookmarks();    // Feather: bookmarks import/export
     if (failures == 0) {
         std::printf("all logic tests passed (%d checks)\n", checks);
         return 0;

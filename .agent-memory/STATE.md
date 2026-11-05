@@ -1,6 +1,6 @@
 # Current state
 
-_Last updated: 2026-11-05 by OpenCode (gpt-5.4/iceman-contributor-free). Engine: WebView2 from C++ (see docs/adr/0001-webview2-engine.md). Source has additional work pending relink (running `featherwin.exe` locks output)._
+_Last updated: 2026-11-05 by OpenCode (gpt-5.4/iceman-contributor-free). Engine: WebView2 from C++ (see docs/adr/0001-webview2-engine.md). Latest app changes compile but relink requires closing a running `featherwin.exe` (locked output)._
 
 ## Done
 

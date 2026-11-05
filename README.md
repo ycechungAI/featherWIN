@@ -56,6 +56,18 @@ ctest --test-dir build -C Release --output-on-failure
 .\build\Release\featherwin.exe
 ```
 
+## Installer / package (NF-4, unsigned)
+
+Close any running `featherwin.exe` first (a running app locks the build output). Then:
+
+```powershell
+cmake --build build --config Release
+cpack --config build\CPackConfig.cmake -G ZIP -C Release
+# If NSIS is installed: cpack --config build\CPackConfig.cmake -G NSIS -C Release
+```
+
+The app icon (`assets/feather.ico`) is derived from Feather 0.2.0’s `Support/Feather.icns` ([ycechungAI/feather](https://github.com/ycechungAI/feather), v0.2.0).
+
 ## Layout (key files)
 
 | Path | Purpose |
