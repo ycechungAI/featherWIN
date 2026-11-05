@@ -3578,6 +3578,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     RegisterClassExW(&wc);
     g_main = CreateWindowExW(0, kWindowClass, L"featherWIN", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                              CW_USEDEFAULT, CW_USEDEFAULT, 1100, 760, nullptr, nullptr, instance, nullptr);
+    if (g_main && appIcon) SendMessageW(g_main, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(appIcon));
+    if (g_main && appIconSm) SendMessageW(g_main, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(appIconSm));
     ShowWindow(g_main, show);
     std::wstring dataFolder;
     PWSTR localAppData = nullptr;
