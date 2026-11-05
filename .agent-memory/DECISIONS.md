@@ -2,6 +2,12 @@
 
 Append-only. Newest entry at the top.
 
+## 2026-11-04 featherWIN is not a 1:1 port of Feather
+
+**Decision:** Feather's features are the starting point, not a checklist to copy. Security and feature behavior are reworked for Windows where Windows does things differently: SmartScreen and Mark-of-the-Web for downloads, WebView2 security settings, the Recycle Bin rule in AGENTS.md, per-user app data under `%APPDATA%`, and Windows-native dialogs and shortcuts. Each deliberate deviation from the SPEC gets an ADR in `docs/adr/`, per AGENTS.md.
+**Why:** The macOS app relies on WebKit, sandboxing and macOS conventions that don't map one-to-one onto WebView2 and Windows. Copying the macOS behavior would mean weaker or odd Windows security.
+**Open:** which items the user wants reworked first. Listed in the next session.
+
 ## 2026-11-04 Engine is WebView2 (C++), superseding the Servo choice below
 
 **Decision:** featherWIN uses the WebView2 control from C++ (Win32 + WebView2 SDK). The user confirmed this after the downsides were laid out: Chromium, which the Servo entry ruled out, and an early Servo would be harder to ship. Servo is kept as a dropped option.
