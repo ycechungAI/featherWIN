@@ -2,6 +2,15 @@
 
 Append-only. Newest entry at the top.
 
+## 2026-11-04 Priorities: ease of use, small install, low memory, above everything else
+
+**Decision:** When two options conflict, pick the one that is easier to use, keeps the install small, and uses less memory. Security is not traded away: it's required, but it's done with the cheapest option that meets it (for example, the Windows built-in SmartScreen rather than a bundled scanner).
+**What this means in practice:**
+- Memory: tab sleep (`FR-TAB6`, WebView2 `TrySuspend`) moves up the list. Each WebView2 tab is a separate renderer process, so sleeping hidden tabs matters most.
+- Install: no bundled engine or big runtime. WebView2 comes from Windows, and the app ships only its own binary.
+- Ease of use: the UI stays simple. Extension UI (toolbar, popups, options) is judged by how much it costs to build and maintain, and the popup test decides how far to go.
+**Open:** how strict the priority is in practice, for example whether a faster feature that costs memory is ever worth it.
+
 ## 2026-11-04 featherWIN is not a 1:1 port of Feather
 
 **Decision:** Feather's features are the starting point, not a checklist to copy. Security and feature behavior are reworked for Windows where Windows does things differently: SmartScreen and Mark-of-the-Web for downloads, WebView2 security settings, the Recycle Bin rule in AGENTS.md, per-user app data under `%APPDATA%`, and Windows-native dialogs and shortcuts. Each deliberate deviation from the SPEC gets an ADR in `docs/adr/`, per AGENTS.md.

@@ -138,3 +138,7 @@ Source files (Sources/Feather): the engine-specific parts are small.
 Verified test surface for porting: `URLToolsTests`, `NavigationPolicyTests`, `TabStripModelTests`, `TabGroupsTests`, `BookmarksTests`, `SessionsTests`, `SessionRestoreTests`, `DownloadsHistoryTests`, `SuggestionsTests`, `SearchEngineTests`, `VideoToolsTests`, `SiteDataTests`, `ShieldsAllowlistTests`, `ShieldsRulesTests`, `PageScriptTests`.
 
 Main risk: `FR-EXT*`. Feather's extension support is built on WebKit's WebExtension API, and WebView2 doesn't expose one. Decide before Phase 3 whether to drop it, limit it, or switch engines.
+
+## 0. Priorities
+
+When requirements conflict, the order is: **ease of use, small install, low memory**, then everything else. Security is required and is met with the cheapest option that works on Windows. See DECISIONS.md (2026-11-04).
