@@ -141,4 +141,4 @@ Main risk: `FR-EXT*`. Feather's extension support is built on WebKit's WebExtens
 
 ## 0. Priorities
 
-When requirements conflict, the order is: **ease of use, small install, low memory**, then everything else. Security is required and is met with the cheapest option that works on Windows. See DECISIONS.md (2026-11-04).
+When requirements conflict, the order is: **ease of use, small install, low memory**, then everything else. Speed wins only while memory stays under a budget that is lower than Edge's and Chrome's for the same pages; at that level, speed is given up for memory. See DECISIONS.md. Security is required and is met with the cheapest option that works on Windows. See DECISIONS.md (2026-11-04).

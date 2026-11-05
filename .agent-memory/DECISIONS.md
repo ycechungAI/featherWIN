@@ -9,7 +9,8 @@ Append-only. Newest entry at the top.
 - Memory: tab sleep (`FR-TAB6`, WebView2 `TrySuspend`) moves up the list. Each WebView2 tab is a separate renderer process, so sleeping hidden tabs matters most.
 - Install: no bundled engine or big runtime. WebView2 comes from Windows, and the app ships only its own binary.
 - Ease of use: the UI stays simple. Extension UI (toolbar, popups, options) is judged by how much it costs to build and maintain, and the popup test decides how far to go.
-**Open:** how strict the priority is in practice, for example whether a faster feature that costs memory is ever worth it.
+**Speed rule:** speed wins while memory stays inside an acceptable budget. The budget is lower than Edge's and Chrome's memory use for the same pages. Once a change would bring featherWIN to Edge's or Chrome's memory level, the change gives up speed to save memory.
+**Baseline to measure (on the Windows VM):** open the same 6 busy sites in Edge and Chrome, then in featherWIN, and record total memory and time to first page (the Feather README's 6-site test). The budget is set from Edge's number, and it has to be lower.
 
 ## 2026-11-04 featherWIN is not a 1:1 port of Feather
 
