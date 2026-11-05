@@ -309,15 +309,11 @@ void EnterSplitView() {
     g_splitPane->activeId = rightId;
     g_pane.activeId = prevId;
     g_activeId = prevId;
-    g_focusedPane = g_splitPane.get(); // user was on the moved/current tab (now right)
     g_viewMode = ViewMode::Split;
     LayoutChrome();
     LayoutContent();
-    ActivateTab(prevId); // refresh primary; will also show right pane active
-    // Ensure right pane's active tab is visible (ActivateTab sets both panes' visibility by active ids)
-    if (Tab* rt = FindTabInPane(*g_splitPane, rightId)) {
-        if (rt->controller) rt->controller->put_IsVisible(TRUE);
-    }
+    // Keep focus on the moved/current tab (right pane) in split view.
+    ActivateTab(rightId);
     RefreshChrome();
     InvalidateRect(g_main, nullptr, TRUE);
 }
@@ -1678,6 +1674,15 @@ void SetupTab(Tab& tab) {
                 if (down && IsCtrlDown() && IsShortcutKey(vk)) {
                     args->put_Handled(TRUE);
                     PostMessageW(g_main, kMsgShortcut, vk, IsShiftDown() ? 1 : 0);
+                }
+                return S_OK;
+            }).Get(),
+        &token);
+    tab.controller->add_GotFocus(
+        Callback<ICoreWebView2FocusChangedEventHandler>(
+            [id](ICoreWebView2Controller*, IUnknown*) -> HRESULT {
+                if (IsSplitActive()) {
+                    if (BrowserPane* p = PaneOfTab(id)) g_focusedPane = p;
                 }
                 return S_OK;
             }).Get(),
