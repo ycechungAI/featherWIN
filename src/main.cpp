@@ -40,12 +40,24 @@ constexpr int kBookmarkBarRows = 2;
 constexpr int kBookmarkBarHeight = kBookmarkBarRows * kBookmarkRowHeight + 6;
 constexpr int kFindBarHeight = 30;
 bool g_findVisible = false;
-bool g_focusMode = false; // Focus mode: hide chrome for max screen real estate (movie/Zen-like)
-inline int MenuBarVisibleHeight() { return g_focusMode ? 0 : kMenuBarHeight; }
+bool g_focusMode = false; // Zen-style compact: auto-hide chrome, reveal on hover near top (max content)
+bool g_focusChromeRevealed = false;
+bool g_focusHideBookmarks = false; // minimalist: hide bookmarks toolbar in compact chrome
+bool g_focusHideTabs = false;      // hide compact tab strip in revealed chrome
+constexpr int kCompactAddressHeight = 34;
+constexpr int kCompactTabHeight = 24;
+inline int MenuBarVisibleHeight() { return kMenuBarHeight; }
+inline int CompactTabStripTop() { return kMenuBarHeight; }
+inline int CompactTabStripHeight() { return !g_focusHideTabs ? kCompactTabHeight : 0; }
+inline int CompactChromeHeight() { return kMenuBarHeight + CompactTabStripHeight() + kCompactAddressHeight + (g_focusHideBookmarks ? 0 : kBookmarkBarHeight); }
+inline bool FocusChromeVisible() { return !g_focusMode || g_focusChromeRevealed; }
 inline int FindBarTop() { return kToolbarTop + kToolbarHeight; }
 inline int FindBarVisibleHeight() { return (g_findVisible && !g_focusMode) ? kFindBarHeight : 0; }
-inline int BookmarkBarTop() { return kToolbarTop + kToolbarHeight + FindBarVisibleHeight(); }
-inline int ChromeHeight() { return g_focusMode ? 0 : (BookmarkBarTop() + kBookmarkBarHeight); }
+inline int BookmarkBarTop() { return g_focusMode ? (kMenuBarHeight + CompactTabStripHeight() + kCompactAddressHeight) : (kToolbarTop + kToolbarHeight + FindBarVisibleHeight()); }
+inline int ChromeHeight() {
+    if (g_focusMode) return g_focusChromeRevealed ? CompactChromeHeight() : 0;
+    return BookmarkBarTop() + kBookmarkBarHeight;
+}
 constexpr int kTabMinWidth = 60;
 constexpr int kTabMaxWidth = 200;
 constexpr int kNewTabWidth = 34;
@@ -57,7 +69,7 @@ constexpr UINT_PTR kTimerFolderClose = 2;
 constexpr int kMaxFolderLevels = 5;
 
 enum ControlId { kBackButton = 101, kForwardButton, kReloadButton, kStarButton, kShieldButton, kPipButton, kSplitViewButton, kMediaButton, kAddressBar, kFindEdit = 201, kFindNext, kFindPrev, kFindClose };
-enum MenuId { kMenuNone = -1, kMenuFile = 0, kMenuBookmarks = 1, kMenuHistory = 2, kMenuExtensions = 3, kMenuSessions = 4, kMenuTabGroups = 5, kMenuGear = 6 };
+enum MenuId { kMenuNone = -1, kMenuFile = 0, kMenuBookmarks = 1, kMenuHistory = 2, kMenuExtensions = 3, kMenuSessions = 4, kMenuTabGroups = 5, kMenuModes = 6, kMenuGear = 7 };
 
 struct Tab {
     int id = 0;
@@ -187,6 +199,7 @@ std::wstring GetText(HWND hwnd) {
 
 bool IsCtrlDown() { return (GetKeyState(VK_CONTROL) & 0x8000) != 0; }
 bool IsShiftDown() { return (GetKeyState(VK_SHIFT) & 0x8000) != 0; }
+bool IsWinDown() { return (GetKeyState(VK_LWIN) & 0x8000) || (GetKeyState(VK_RWIN) & 0x8000); }
 bool IsShortcutKey(UINT vk) {
     return (vk >= '1' && vk <= '9') || vk == 'D' || vk == 'F' || vk == 'G' || vk == 'H' || vk == 'J' || vk == 'L' || vk == 'R' || vk == 'T' || vk == 'W' || vk == VK_TAB;
 }
@@ -230,7 +243,10 @@ void LayoutContent();
 void RefreshChrome();
 void InvalidateStrip();
 void ActivateTab(int id);
+void NewTab(const std::wstring& url, bool activate, bool pinned = false, const std::wstring& knownTitle = L"");
+void SaveSettings();
 void FocusActive();
+RECT MenuItemRect(int index);
 
 void CloseSplitView() {
     if (!g_splitPane) return;
@@ -258,6 +274,11 @@ void SetViewMode(ViewMode mode) {
     }
     g_viewMode = mode;
     g_focusMode = (mode == ViewMode::Focus);
+    g_focusChromeRevealed = false; // Zen-style: hidden until hover to top edge
+    if (g_main) {
+        if (g_focusMode) SetTimer(g_main, 4, 120, nullptr);
+        else KillTimer(g_main, 4);
+    }
     if (g_splitPane && mode != ViewMode::Split) CloseSplitView();
     LayoutChrome();
     LayoutContent();
@@ -268,21 +289,52 @@ void SetViewMode(ViewMode mode) {
 
 void ToggleFocusMode() { SetViewMode(g_focusMode ? ViewMode::Normal : ViewMode::Focus); }
 
-void ShowViewModeMenu() {
-    if (!g_splitBtn) return;
-    RECT r{}; GetWindowRect(g_splitBtn, &r);
+void ShowViewModeMenuAt(POINT screenPt) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Normal ? MF_CHECKED : 0), 401, L"Normal\tCtrl+Alt+1");
     AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Split  ? MF_CHECKED : 0), 402, L"Split\tCtrl+Alt+2 (planned)");
-    AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Focus  ? MF_CHECKED : 0), 403, L"Focus\tCtrl+Alt+3 / F11");
+    AppendMenuW(m, MF_STRING | (g_viewMode == ViewMode::Focus  ? MF_CHECKED : 0), 403, L"Focus (Zen compact)\tCtrl+Alt+3 / F11");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Requested: Win+M+1/2/3 (best-effort; Win+M is a Windows shortcut)");
+    // Focus mode hides tab strip but keeps access to other open tabs (no mode switch needed).
+    HMENU tabsMenu = CreatePopupMenu();
+    for (size_t i = 0; i < g_tabs.size() && i < 30; ++i) {
+        if (!g_tabs[i]) continue;
+        std::wstring label = g_tabs[i]->title.empty() ? (g_tabs[i]->url.empty() ? L"New Tab" : g_tabs[i]->url) : g_tabs[i]->title;
+        if (label.size() > 60) label = label.substr(0, 57) + L"...";
+        UINT flags = MF_STRING;
+        if (g_tabs[i]->id == g_activeId) flags |= MF_CHECKED;
+        AppendMenuW(tabsMenu, flags, 4500 + static_cast<UINT>(i), label.c_str());
+    }
+    if (g_tabs.empty()) AppendMenuW(tabsMenu, MF_STRING | MF_GRAYED, 0, L"(no tabs)");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)tabsMenu, L"Switch Tab\t(Ctrl+Tab)");
+    AppendMenuW(m, MF_STRING, 406, L"New Tab\tCtrl+T");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (g_focusHideBookmarks ? MF_CHECKED : 0), 405, L"Compact: Hide bookmarks bar (minimalist)");
+    AppendMenuW(m, MF_STRING | (g_focusHideTabs ? MF_CHECKED : 0), 407, L"Compact: Hide tab strip (max focus)");
     SetForegroundWindow(g_main);
-    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN | TPM_TOPALIGN, r.right, r.bottom, 0, g_main, nullptr);
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, screenPt.x, screenPt.y, 0, g_main, nullptr);
     DestroyMenu(m);
     if (cmd == 401) SetViewMode(ViewMode::Normal);
     else if (cmd == 402) SetViewMode(ViewMode::Split);
     else if (cmd == 403) SetViewMode(ViewMode::Focus);
+    else if (cmd == 405) { g_focusHideBookmarks = !g_focusHideBookmarks; SaveSettings(); LayoutChrome(); LayoutContent(); InvalidateRect(g_main, nullptr, TRUE); }
+    else if (cmd == 407) { g_focusHideTabs = !g_focusHideTabs; SaveSettings(); LayoutChrome(); LayoutContent(); InvalidateRect(g_main, nullptr, TRUE); }
+    else if (cmd == 406) { NewTab(kHomePage, true); }
+    else if (cmd >= 4500 && cmd < 4530) {
+        size_t idx = static_cast<size_t>(cmd - 4500);
+        if (idx < g_tabs.size() && g_tabs[idx]) ActivateTab(g_tabs[idx]->id);
+    }
+}
+
+void ShowViewModeMenu() {
+    if (g_splitBtn && IsWindowVisible(g_splitBtn)) {
+        RECT r{}; GetWindowRect(g_splitBtn, &r);
+        ShowViewModeMenuAt(POINT{r.right, r.bottom});
+    } else {
+        RECT mr = MenuItemRect(kMenuModes);
+        POINT p{mr.left, mr.bottom}; ClientToScreen(g_main, &p);
+        ShowViewModeMenuAt(p);
+    }
 }
 
 RECT ContentBounds() {
@@ -354,9 +406,10 @@ RECT AddressPillRect() {
     ReleaseDC(g_main, dc);
     const int minWidth = static_cast<int>(sz.cx) * 2 / 5 + 36;
     const int maxWidth = static_cast<int>(sz.cx) + 36;
-    const int left = 8 + 8 * 42 + 8; // 8 toolbar buttons incl. view-mode/split dropdown
+    const int top = g_focusMode ? (kMenuBarHeight + CompactTabStripHeight() + 2) : (kToolbarTop + 4);
+    const int left = g_focusMode ? 8 : (8 + 8 * 42 + 8); // compact: full-width-ish address (no nav buttons)
     const int width = std::clamp(rightEdge - left, minWidth, maxWidth);
-    return RECT{left, kToolbarTop + 4, left + width, kToolbarTop + 36};
+    return RECT{left, top, left + width, top + 30};
 }
 
 void FillRoundedRect(HDC dc, const RECT& rect, int radius, COLORREF fill, COLORREF border) {
@@ -578,6 +631,7 @@ void LoadHistory();
 
 void LoadSettings() {
     g_mediaExtSlot3.clear();
+    g_focusHideBookmarks = false;
     if (g_settingsPath.empty()) return;
     HANDLE file = CreateFileW(g_settingsPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return;
@@ -590,20 +644,26 @@ void LoadSettings() {
         bytes.resize(read);
     }
     CloseHandle(file);
-    // simple: media_ext_slot3=<utf8 text>
-    std::string key = "media_ext_slot3=";
-    size_t p = bytes.find(key);
-    if (p != std::string::npos) {
+    auto readKey = [&](const char* k)->std::string {
+        size_t p = bytes.find(std::string(k) + "=");
+        if (p == std::string::npos) return {};
+        p += strlen(k) + 1;
         size_t e = bytes.find('\n', p);
-        std::string v = bytes.substr(p + key.size(), e == std::string::npos ? std::wstring::npos : e - (p + key.size()));
+        std::string v = bytes.substr(p, e == std::string::npos ? std::string::npos : e - p);
         if (!v.empty() && v.back() == '\r') v.pop_back();
-        g_mediaExtSlot3 = FromUtf8(v);
-    }
+        return v;
+    };
+    g_mediaExtSlot3 = FromUtf8(readKey("media_ext_slot3"));
+    g_focusHideBookmarks = readKey("compact_hide_bookmarks") == "1";
+    g_focusHideTabs = readKey("compact_hide_tabs") == "1";
 }
 
 void SaveSettings() {
     if (g_settingsPath.empty()) return;
-    std::string out = "media_ext_slot3=" + ToUtf8(g_mediaExtSlot3) + "\n";
+    std::string out;
+    out += "media_ext_slot3=" + ToUtf8(g_mediaExtSlot3) + "\n";
+    out += "compact_hide_bookmarks=" + std::string(g_focusHideBookmarks ? "1" : "0") + "\n";
+    out += "compact_hide_tabs=" + std::string(g_focusHideTabs ? "1" : "0") + "\n";
     HANDLE file = CreateFileW(g_settingsPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
@@ -920,23 +980,24 @@ void FindInPage(bool forward) {  // FR-NAV3
 void LayoutChrome() {
     if (!g_main) return;
     HWND btns[] = {g_back, g_forward, g_reload, g_star, g_shield, g_pip, g_splitBtn, g_media};
-    const bool showChrome = !g_focusMode;
+    const bool showToolbarBtns = !g_focusMode;
     for (int i = 0; i < 8; ++i) {
         RECT r = ButtonRect(i);
         if (btns[i]) {
-            if (showChrome) MoveWindow(btns[i], r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
-            ShowWindow(btns[i], showChrome ? SW_SHOW : SW_HIDE);
+            if (showToolbarBtns) MoveWindow(btns[i], r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
+            ShowWindow(btns[i], showToolbarBtns ? SW_SHOW : SW_HIDE);
         }
     }
+    const bool showAddress = !g_focusMode || g_focusChromeRevealed;
     RECT pill = AddressPillRect();
     if (g_address) {
-        if (showChrome) MoveWindow(g_address, static_cast<int>(pill.left + 10), static_cast<int>(pill.top + 7),
+        if (showAddress) MoveWindow(g_address, static_cast<int>(pill.left + 10), static_cast<int>(pill.top + 4),
                    std::max(0, static_cast<int>(pill.right - pill.left - 20)),
-                   static_cast<int>(pill.bottom - pill.top - 14), TRUE);
-        ShowWindow(g_address, showChrome ? SW_SHOW : SW_HIDE);
+                   std::max(0, static_cast<int>(pill.bottom - pill.top - 8)), TRUE);
+        ShowWindow(g_address, showAddress ? SW_SHOW : SW_HIDE); // compact: shown when chrome revealed
     }
     if (g_findEdit) {
-        const bool showFind = showChrome && g_findVisible;
+        const bool showFind = !g_focusMode && g_findVisible;
         for (HWND c : {g_findEdit, g_findPrev, g_findNext, g_findClose}) if (c) ShowWindow(c, showFind ? SW_SHOW : SW_HIDE);
         if (showFind) LayoutFindBar();
     }
@@ -1080,7 +1141,7 @@ void ActivateTab(int id) {
     InvalidateStrip();
 }
 
-void NewTab(const std::wstring& url, bool activate, bool pinned = false, const std::wstring& knownTitle = L"");
+void NewTab(const std::wstring& url, bool activate, bool pinned, const std::wstring& knownTitle);
 void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args);
 void CloseTab(int id);
 void ReopenClosedTab();
@@ -1470,6 +1531,12 @@ void InstallExtensionFromArchiveDialog() {
 void SetupTab(Tab& tab) {
     const int id = tab.id;
     if (tab.webview) LoadDefaultExtensions(tab.webview.Get());
+    if (tab.webview) {
+        ComPtr<ICoreWebView2Settings> settings;
+        if (SUCCEEDED(tab.webview->get_Settings(&settings)) && settings) {
+            settings->put_IsStatusBarEnabled(FALSE); // hide bottom status bar (hover URL); Zen-compact focus
+        }
+    }
     EventRegistrationToken token{};
     tab.webview->add_SourceChanged(
         Callback<ICoreWebView2SourceChangedEventHandler>(
@@ -1786,7 +1853,7 @@ void CloseTab(int id) {
     }
     g_tabs.erase(g_tabs.begin() + index);
     if (g_tabs.empty()) {
-        DestroyWindow(g_main);
+        NewTab(kHomePage, true); // keep window open; closing last tab should not exit
         return;
     }
     if (wasActive) {
@@ -1966,6 +2033,62 @@ void PaintTabStrip(HDC dc) {
     SelectObject(dc, old);
 }
 
+void PaintCompactTabStrip(HDC dc) { // Zen compact/focus: accessible tab switcher (tabs hidden until hover/reveal)
+    RECT c{}; GetClientRect(g_main, &c);
+    const int top = CompactTabStripTop();
+    RECT strip{0, top, c.right, top + kCompactTabHeight};
+    HBRUSH bg = CreateSolidBrush(RGB(236, 238, 242));
+    FillRect(dc, &strip, bg); DeleteObject(bg);
+    HGDIOBJ old = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+    SetBkMode(dc, TRANSPARENT);
+    int x = 6;
+    const int maxX = c.right - 8;
+    for (size_t i = 0; i < g_tabs.size() && x < maxX; ++i) {
+        if (!g_tabs[i]) continue;
+        Tab& tab = *g_tabs[i];
+        std::wstring label = tab.title.empty() ? (tab.url.empty() ? L"New Tab" : tab.url) : tab.title;
+        if (label.size() > 24) label = label.substr(0, 22) + L"..";
+        SIZE sz{}; GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &sz);
+        const int w = std::clamp(static_cast<int>(sz.cx) + 14, 40, 180);
+        RECT r{x, top + 2, std::min(x + w, maxX), top + kCompactTabHeight - 2};
+        COLORREF fill = (tab.id == g_activeId) ? RGB(255,255,255) : RGB(224,227,232);
+        FillRoundedRect(dc, r, 8, fill, fill);
+        if (tab.groupId > 0) if (TabGroup* g = FindTabGroup(tab.groupId)) { RECT m{r.left,r.bottom-2,r.right,r.bottom}; HBRUSH gb=CreateSolidBrush(g->color); FillRect(dc,&m,gb); DeleteObject(gb); }
+        SetTextColor(dc, RGB(40,44,48));
+        RECT tr{r.left+6, r.top, r.right-4, r.bottom};
+        DrawTextW(dc, label.c_str(), -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        x += w + 4;
+    }
+    SelectObject(dc, old);
+}
+
+bool HitTestCompactTabStrip(int x, int y, int& tabId) {
+    tabId = 0;
+    if (!g_focusMode || !g_focusChromeRevealed || g_focusHideTabs) return false;
+    const int top = CompactTabStripTop();
+    if (y < top || y >= top + kCompactTabHeight) return false;
+    RECT c{}; GetClientRect(g_main, &c);
+    HDC dc = GetDC(g_main);
+    HGDIOBJ old = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+    int tx = 6;
+    const int maxX = c.right - 8;
+    bool hit = false;
+    for (size_t i = 0; i < g_tabs.size() && tx < maxX; ++i) {
+        if (!g_tabs[i]) continue;
+        Tab& tab = *g_tabs[i];
+        std::wstring label = tab.title.empty() ? (tab.url.empty() ? L"New Tab" : tab.url) : tab.title;
+        if (label.size() > 24) label = label.substr(0, 22) + L"..";
+        SIZE sz{}; GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &sz);
+        const int w = std::clamp(static_cast<int>(sz.cx) + 14, 40, 180);
+        RECT r{tx, top + 2, std::min(tx + w, maxX), top + kCompactTabHeight - 2};
+        if (x >= r.left && x < r.right) { tabId = tab.id; hit = true; break; }
+        tx += w + 4;
+    }
+    SelectObject(dc, old);
+    ReleaseDC(g_main, dc);
+    return hit;
+}
+
 void PaintBookmarkBar(HDC dc) {
     RECT c{};
     GetClientRect(g_main, &c);
@@ -2007,8 +2130,8 @@ void PaintBookmarkBar(HDC dc) {
 }
 
 RECT MenuItemRect(int index) {
-    const wchar_t* labels[] = {L"File", L"Bookmarks", L"History", L"Extensions", L"Sessions", L"Tab Groups"};
-    constexpr int kLeftMenuCount = 6;
+    const wchar_t* labels[] = {L"File", L"Bookmarks", L"History", L"Extensions", L"Sessions", L"Tab Groups", L"Modes"};
+    constexpr int kLeftMenuCount = 7;
     HDC dc = GetDC(g_main);
     HGDIOBJ old = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
     int x = 6;
@@ -2038,8 +2161,8 @@ void PaintMenuBar(HDC dc) {
     HBRUSH bg = CreateSolidBrush(kThemeBg);
     FillRect(dc, &bar, bg);
     DeleteObject(bg);
-    const wchar_t* labels[] = {L"File", L"Bookmarks", L"History", L"Extensions", L"Sessions", L"Tab Groups"};
-    constexpr int kLeftMenuCount = 6;
+    const wchar_t* labels[] = {L"File", L"Bookmarks", L"History", L"Extensions", L"Sessions", L"Tab Groups", L"Modes"};
+    constexpr int kLeftMenuCount = 7;
     HGDIOBJ old = SelectObject(dc, g_smallFont ? g_smallFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(48, 52, 56));
@@ -2059,7 +2182,7 @@ void PaintMenuBar(HDC dc) {
 
 int HitTestMenu(int x, int y) {
     if (y < 0 || y >= kMenuBarHeight) return kMenuNone;
-    for (int i = 0; i < 6; ++i) {  // left menus
+    for (int i = 0; i < 7; ++i) {  // left menus incl. Modes
         RECT r = MenuItemRect(i);
         if (x >= r.left && x < r.right) return i;
     }
@@ -2740,11 +2863,20 @@ void OpenSettingsTab() {  // FR-SET1 (minimal)
 
 void ShowMenu(int which) {
     CloseAllFolderPopups();
+    if (which == kMenuModes) {
+        RECT mr = MenuItemRect(kMenuModes);
+        POINT p{mr.left, mr.bottom}; ClientToScreen(g_main, &p);
+        ShowViewModeMenuAt(p);
+        return;
+    }
     HMENU menu = CreatePopupMenu();
     if (which == kMenuFile) {
         AppendMenuW(menu, MF_STRING, 1, L"New Tab\tCtrl+T");
         AppendMenuW(menu, MF_STRING, 2, L"Close Tab\tCtrl+W");
         AppendMenuW(menu, MF_STRING | (g_closedTabs.empty() ? MF_GRAYED : MF_ENABLED), 6, L"Reopen Closed Tab\tCtrl+Shift+T");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING | (g_viewMode == ViewMode::Normal ? MF_CHECKED : 0), 401, L"Mode: Normal\tCtrl+Alt+1");
+        AppendMenuW(menu, MF_STRING | (g_viewMode == ViewMode::Focus  ? MF_CHECKED : 0), 403, L"Mode: Focus (Zen compact)\tCtrl+Alt+3 / F11");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, 4, L"Picture in Picture");
         AppendMenuW(menu, MF_STRING, 5, L"Open Extensions Folder...");
@@ -2874,6 +3006,20 @@ void ShowMenu(int which) {
     const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, g_main, nullptr);
     g_menuTracking = false;
     DestroyMenu(menu);
+    if (cmd >= 401 && cmd <= 407) {
+        if (cmd == 401) SetViewMode(ViewMode::Normal);
+        else if (cmd == 402) SetViewMode(ViewMode::Split);
+        else if (cmd == 403) SetViewMode(ViewMode::Focus);
+        else if (cmd == 405) { g_focusHideBookmarks = !g_focusHideBookmarks; SaveSettings(); LayoutChrome(); LayoutContent(); InvalidateRect(g_main, nullptr, TRUE); }
+        else if (cmd == 406) { NewTab(kHomePage, true); }
+        else if (cmd == 407) { g_focusHideTabs = !g_focusHideTabs; SaveSettings(); LayoutChrome(); LayoutContent(); InvalidateRect(g_main, nullptr, TRUE); }
+        return;
+    }
+    if (cmd >= 4500 && cmd < 4530) {
+        size_t idx = static_cast<size_t>(cmd - 4500);
+        if (idx < g_tabs.size() && g_tabs[idx]) ActivateTab(g_tabs[idx]->id);
+        return;
+    }
     if (cmd >= 7400 && cmd < 7500) { // FR-GRP: add current tab to existing group
         const int gi = cmd - 7400;
         Tab* t = ActiveTab();
@@ -3442,9 +3588,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RECT client{};
             GetClientRect(hwnd, &client);
             if (g_focusMode) {
-                HBRUSH bg = CreateSolidBrush(RGB(18, 18, 18));
-                FillRect(dc, &client, bg);
-                DeleteObject(bg);
+                // Zen-style: chrome hidden until hover near top edge; revealed chrome shows menu+Modes+tabs+address+bookmarks.
+                if (g_focusChromeRevealed) {
+                    RECT chrome{0, 0, client.right, ChromeHeight()};
+                    HBRUSH bg = CreateSolidBrush(kThemeBg);
+                    FillRect(dc, &chrome, bg);
+                    DeleteObject(bg);
+                    FillRoundedRect(dc, AddressPillRect(), 14, RGB(255, 255, 255), kThemeBorder);
+                    PaintMenuBar(dc);
+                    if (!g_focusHideTabs) PaintCompactTabStrip(dc); // accessible in focus mode
+                    if (!g_focusHideBookmarks) PaintBookmarkBar(dc);
+                }
+                // else: full content (WebView) visible; hover top edge to reveal
             } else {
                 RECT chrome{0, 0, client.right, ChromeHeight()};
                 HBRUSH bg = CreateSolidBrush(kThemeBg);
@@ -3471,9 +3626,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_LBUTTONDOWN: {
-            if (g_focusMode) break;
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp);
+            if (g_focusMode) {
+                if (!g_focusChromeRevealed) break; // hidden; hover top edge to reveal
+                // Zen-style compact: menu bar + Modes + tabs + address (+ optional bookmarks toolbar) accessible.
+                const int menuHit = HitTestMenu(x, y);
+                if (menuHit != kMenuNone) { ShowMenu(menuHit); return 0; }
+                if (!g_focusHideTabs) {
+                    int tabId = 0;
+                    if (HitTestCompactTabStrip(x, y, tabId)) { if (tabId) ActivateTab(tabId); return 0; }
+                }
+                if (!g_focusHideBookmarks) {
+                    if (OverflowAt(x, y)) { ShowOverflowPopup(); return 0; }
+                    BookmarkNode* bm = BookmarkAt(x, y);
+                    if (bm) {
+                        g_barDragNode = bm; g_barDragStart = POINT{x, y}; g_barDragging = false;
+                        SetCapture(hwnd); return 0;
+                    }
+                }
+                return 0;
+            }
             if (y < BookmarkBarTop() || y >= BookmarkBarTop() + kBookmarkBarHeight) CloseAllFolderPopups();
             const int menuHit = HitTestMenu(x, y);
             if (menuHit != kMenuNone) { ShowMenu(menuHit); return 0; }
@@ -3533,7 +3706,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case WM_MOUSEMOVE: {
-            if (g_focusMode) break;
+            if (g_focusMode) {
+                if (!g_focusChromeRevealed) break;
+                const int x = GET_X_LPARAM(lp);
+                const int y = GET_Y_LPARAM(lp);
+                const int h = HitTestMenu(x, y);
+                if (h != g_hoverMenu) { g_hoverMenu = h; InvalidateMenuBar(); }
+                TRACKMOUSEEVENT tr{sizeof(tr), TME_LEAVE, hwnd, 0};
+                TrackMouseEvent(&tr);
+                break;
+            }
             const int x = GET_X_LPARAM(lp);
             const int y = GET_Y_LPARAM(lp);
             const int h = HitTestMenu(x, y);
@@ -3642,7 +3824,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_KEYDOWN:
-            if (IsCtrlDown() && IsShortcutKey(static_cast<UINT>(wp))) { HandleShortcut(static_cast<UINT>(wp), IsShiftDown()); return 0; }
+            if (IsCtrlDown() && !IsWinDown() && IsShortcutKey(static_cast<UINT>(wp))) { HandleShortcut(static_cast<UINT>(wp), IsShiftDown()); return 0; }
             break;
         case WM_TIMER:
             if (wp == 3) {  // FR-TAB6: suspend idle background tabs (5 min default)
@@ -3667,6 +3849,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             }
                             return S_OK;
                         }).Get());
+                }
+                return 0;
+            }
+            if (wp == 4 && g_focusMode) { // Zen-style: reveal chrome on hover near top, hide when cursor leaves
+                POINT pt{}; GetCursorPos(&pt); ScreenToClient(g_main, &pt);
+                RECT c{}; GetClientRect(g_main, &c);
+                const bool inClient = pt.x >= 0 && pt.x < c.right && pt.y >= 0 && pt.y < c.bottom;
+                if (!inClient) return 0;
+                bool reveal = g_focusChromeRevealed;
+                if (!g_focusChromeRevealed) {
+                    if (pt.y <= 3) reveal = true;
+                } else {
+                    if (pt.y > CompactChromeHeight() + 10) reveal = false;
+                }
+                if (reveal != g_focusChromeRevealed) {
+                    g_focusChromeRevealed = reveal;
+                    LayoutChrome();
+                    LayoutContent();
+                    InvalidateRect(g_main, nullptr, TRUE);
+                    if (reveal && g_address) SetFocus(g_address); // easy to change websites when revealed
                 }
                 return 0;
             }
@@ -3839,6 +4041,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
                 if (msg.wParam == '1') { SetViewMode(ViewMode::Normal); continue; }
                 if (msg.wParam == '2') { SetViewMode(ViewMode::Split); continue; }
                 if (msg.wParam == '3') { SetViewMode(ViewMode::Focus); continue; }
+            }
+            // In-app shortcuts while focused (Win+E/Win+Q/Win+T/Win+W conflict with Windows shell; best-effort).
+            if (winDown && !IsCtrlDown()) {
+                if (msg.wParam == 'Q' || msg.wParam == 'E') {
+                    if (g_tabs.size() > 1) {
+                        int idx = IndexOf(g_activeId);
+                        if (idx < 0) idx = 0;
+                        if (msg.wParam == 'Q') idx = (idx - 1 + static_cast<int>(g_tabs.size())) % static_cast<int>(g_tabs.size());
+                        else idx = (idx + 1) % static_cast<int>(g_tabs.size());
+                        ActivateTab(g_tabs[static_cast<size_t>(idx)]->id);
+                    }
+                    continue;
+                }
             }
             // Best-effort in-app chord for Win+M+1/2/3 (note: Win+M is a Windows shell shortcut and may be intercepted).
             if (winDown && msg.wParam == 'M') { g_winMChord = true; g_winMChordTick = GetTickCount(); continue; }
