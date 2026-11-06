@@ -1238,12 +1238,12 @@ void NewTabForNewWindow(ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args, i
 void CloseTab(int id);
 void ReopenClosedTab();
 
-void RequestSelfPiP() {  // FR-VID1: page/self Picture-in-Picture; prefers Document PiP to show subtitles/captions when available
-    Tab* tab = ActiveTab();
-    if (!tab || !tab->webview) return;
-    const wchar_t* js = LR"JS((async()=>{try{
-        if (document.pictureInPictureElement) { await document.exitPictureInPicture(); return; }
-        if (window.__featherWinDocPip && !window.__featherWinDocPip.closed) { window.__featherWinDocPip.close(); return; }
+static std::wstring PipScript(bool silentNoVideo) {
+    const wchar_t* silent = silentNoVideo ? L"true" : L"false";
+    std::wstring js = L"(async(silentNoVideo)=>{try{";
+    js += LR"JS(
+        if (document.pictureInPictureElement) { await document.exitPictureInPicture(); return 'toggled'; }
+        if (window.__featherWinDocPip && !window.__featherWinDocPip.closed) { window.__featherWinDocPip.close(); return 'toggled'; }
         const seen=new Set(), vids=[], roots=[document];
         const addRoot=(r)=>{ if(!r||seen.has(r)) return; seen.add(r); try{ r.querySelectorAll&&r.querySelectorAll('video').forEach(v=>vids.push(v)); }catch(e){}
           try{ r.querySelectorAll&&r.querySelectorAll('*').forEach(el=>{ if(el.shadowRoot) addRoot(el.shadowRoot); }); }catch(e){}
@@ -1256,9 +1256,11 @@ void RequestSelfPiP() {  // FR-VID1: page/self Picture-in-Picture; prefers Docum
           .sort((a,b)=>score(b)-score(a));
         let v=candidates.find(x=>!x.paused) || candidates[0];
         if(!v){
-          const hasCrossOriginIframe=[...document.querySelectorAll('iframe')].some(f=>{ try{ return !f.contentDocument; }catch(e){ return true; } });
-          alert(hasCrossOriginIframe ? 'No accessible video found. The video may be inside a cross-origin player (e.g. Dailymotion/embed). Try the player\'s PiP control or a PiP extension.' : 'No video found on this page.');
-          return;
+          if(!silentNoVideo){
+            const hasCrossOriginIframe=[...document.querySelectorAll('iframe')].some(f=>{ try{ return !f.contentDocument; }catch(e){ return true; } });
+            alert(hasCrossOriginIframe ? 'No accessible video found. The video may be inside a cross-origin player (e.g. Dailymotion/embed). Try the player\'s PiP control or a PiP extension.' : 'No video found on this page. In split view, click the pane with the video and try again.');
+          }
+          return 'no-video';
         }
         try{ v.removeAttribute('disablepictureinpicture'); v.disablePictureInPicture=false; }catch(e){}
         // Prefer Document Picture-in-Picture so captions/subtitles can be rendered in the PiP window.
@@ -1289,15 +1291,35 @@ void RequestSelfPiP() {  // FR-VID1: page/self Picture-in-Picture; prefers Docum
               try{ window.__featherWinDocPip=null; }catch(e){} };
             pipWin.addEventListener('pagehide', restore);
             pipWin.addEventListener('unload', restore);
-            return;
+            return 'ok';
           } catch(e) { /* fall through to standard PiP */ }
         }
         // Fallback: standard video PiP. Enable/show text tracks best-effort (native rendering varies).
         try{ if(v.textTracks){ const ts=Array.from(v.textTracks); let shown=false; for(const t of ts){ if(t.mode==='showing'){shown=true;break;} } if(!shown) for(const t of ts){ if(t.kind==='subtitles'||t.kind==='captions'){ t.mode='showing'; shown=true; break; } } if(!shown&&ts[0]) ts[0].mode='showing'; } }catch(e){}
         if(v.requestPictureInPicture) await v.requestPictureInPicture();
-        else alert('Picture in Picture is not available for this video.');
-    }catch(e){console.error(e); try{alert('Picture in Picture failed: '+(e&&e.message?e.message:e));}catch(_){}}})();)JS";
-    tab->webview->ExecuteScript(js, nullptr);
+        else if(!silentNoVideo) alert('Picture in Picture is not available for this video.');
+        return 'ok';
+    )JS";
+    js += L"}catch(e){console.error(e); if(!silentNoVideo) try{alert('Picture in Picture failed: '+(e&&e.message?e.message:e));}catch(_){ } return 'error';}})(";
+    js += silent;
+    js += L");";
+    return js;
+}
+
+void RequestSelfPiP() {  // FR-VID1: page/self Picture-in-Picture; prefers Document PiP to show subtitles/captions when available
+    Tab* focused = ActiveTab();
+    if (!focused || !focused->webview) return;
+    // Run on focused pane first (normal feedback). In split view, also try the other pane silently
+    // so PiP works even if focus targeting is ambiguous; focused pane may show a "no video" alert if
+    // the video lives in the other pane (split-view focus limitation).
+    if (IsSplitActive() && g_splitPane) {
+        BrowserPane& other = (&FocusedPane() == &g_pane) ? *g_splitPane : g_pane;
+        Tab* otherTab = FindTabInPane(other, other.activeId);
+        if (otherTab && otherTab->webview && otherTab != focused) {
+            otherTab->webview->ExecuteScript(PipScript(true).c_str(), nullptr);
+        }
+    }
+    focused->webview->ExecuteScript(PipScript(false).c_str(), nullptr);
 }
 
 void ParseExtensionManifestPages(const std::wstring& extDir, std::wstring& popup, std::wstring& options);
